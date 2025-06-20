@@ -1,0 +1,15 @@
+{
+  "$id": "deals.dispatched.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "deals.dispatched.v1",
+  "type": "object",
+  "required": ["meta", "data"],
+  "properties": {
+    "meta": {
+      "$ref": "_meta.json#"
+    },
+    "data": {
+        "$ref": "deals.dispatched.v1.data.json#"
+    }
+  }
+}

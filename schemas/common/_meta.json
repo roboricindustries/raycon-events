@@ -1,0 +1,32 @@
+{
+  "$id": "_meta.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EventEnvelopeMeta",
+  "type": "object",
+  "required": ["id", "type", "time"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique event ID"
+    },
+    "type": {
+      "type": "string",
+      "description": "Event name and version, e.g. deals.dispatched.v1"
+    },
+    "time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when the event was emitted"
+    },
+    "correlation_id": {
+      "type": "string",
+      "description": "Trace / request correlation ID"
+    },
+    "producer": {
+      "type": "string",
+      "description": "Emitting service and version"
+    }
+  },
+  "additionalProperties": false
+}

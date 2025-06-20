@@ -1,0 +1,97 @@
+{
+  "$id": "deals.dispatched.v1.data.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DealDispatchedData",
+  "type": "object",
+  "required": ["deal", "client", "manager", "company", "instance"],
+    "properties": {
+    "deal": {
+        "type": "object",
+        "required": ["id", "relative_number", "info", "request_date"],
+        "properties": {
+        "id": {
+            "type": "integer",
+            "description": "Internal deal ID"
+        },
+        "relative_number": {
+            "type": "integer",
+            "description": "Deal number relative to company"
+        },
+        "info": {
+            "type": "string",
+            "description": "Additional info"
+        },
+        "request_date": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the deal was dispatched"
+        }
+        },
+        "additionalProperties": false
+    },
+    "client": {
+        "type": "object",
+        "required": ["id", "phone_number"],
+        "properties": {
+        "id": {
+            "type": "integer",
+            "description": "Client ID in system"
+        },
+        "phone_number": {
+            "type": "string",
+            "pattern": "^[0-9]{10,15}$",
+            "description": "Client's phone number in E.164 digits-only format, no '+'"
+        }
+        },
+        "additionalProperties": false
+    },
+    "manager": {
+        "type": "object",
+        "required": ["id", "name", "phone_number", "magic_link"],
+        "properties": {
+        "id": {
+            "type": "integer",
+            "description": "Manager ID"
+        },
+        "name": {
+            "type": "string",
+            "description": "Full name of assigned manager"
+        },
+        "phone_number": {
+            "type": "string",
+            "pattern": "^[0-9]{10,15}$",
+            "description": "Manager phone number in E.164 digits-only format, no '+'"
+        },
+        "magic_link": {
+            "type": "string",
+            "format": "uri",
+            "description": "Manager's magic link"
+        }
+        },
+        "additionalProperties": false
+    },
+    "company": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+        "id": {
+            "type": "integer",
+            "description": "Company ID"
+        }
+        },
+        "additionalProperties": false
+    },
+    "instance": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+        "id": {
+            "type": "integer",
+            "description": "Instance ID"
+        }
+        },
+        "additionalProperties": false
+    }
+    },
+    "additionalProperties": false
+}

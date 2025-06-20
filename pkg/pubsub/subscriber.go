@@ -2,6 +2,8 @@ package pubsub
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -10,8 +12,28 @@ import (
 	"github.com/rabbitmq/amqp091-go"
 )
 
+func matchTopic(pattern, topic string) bool {
+	pParts := strings.Split(pattern, ".")
+	tParts := strings.Split(topic, ".")
+
+	for i, pi := range pParts {
+		if pi == "#" {
+			return true
+		}
+		if i >= len(tParts) {
+			return false
+		}
+		if pi != "*" && pi != tParts[i] {
+			return false
+		}
+	}
+	return len(pParts) == len(tParts)
+}
+
+type Handler func(context.Context, amqp091.Delivery) error
+
 type Subscriber interface {
-	RegisterHandler(routingKey string, handler func(context.Context, amqp091.Delivery) error)
+	RegisterHandler(routingKey string, handler Handler) error
 	Start(queueName string) error
 	Close() error
 }
@@ -21,7 +43,7 @@ type rmqSubscriber struct {
 	ch        *amqp091.Channel
 	exchange  string
 	log       *slog.Logger
-	handlers  map[string]func(context.Context, amqp091.Delivery) error
+	handlers  map[string]Handler
 	msgChan   chan amqp091.Delivery
 	done      chan struct{}
 	wg        sync.WaitGroup
@@ -49,7 +71,7 @@ func NewSubscriber(url, exchange string, logger *slog.Logger, bufferCap, workerC
 		ch:        ch,
 		exchange:  exchange,
 		log:       logger,
-		handlers:  make(map[string]func(context.Context, amqp091.Delivery) error),
+		handlers:  make(map[string]Handler),
 		msgChan:   make(chan amqp091.Delivery, bufferCap),
 		done:      make(chan struct{}),
 		bufferCap: bufferCap,
@@ -57,8 +79,23 @@ func NewSubscriber(url, exchange string, logger *slog.Logger, bufferCap, workerC
 	}, nil
 }
 
-func (s *rmqSubscriber) RegisterHandler(routingKey string, handler func(context.Context, amqp091.Delivery) error) {
+func (s *rmqSubscriber) RegisterHandler(routingKey string, handler Handler) error {
+	for existingHandler := range s.handlers {
+		if matchTopic(routingKey, existingHandler) || matchTopic(existingHandler, routingKey) {
+			return fmt.Errorf("conflict: pattern %q overlaps with %q", routingKey, existingHandler)
+		}
+	}
 	s.handlers[routingKey] = handler
+	return nil
+}
+
+func (s *rmqSubscriber) getHandler(routingKey string) (Handler, bool) {
+	for pattern, handler := range s.handlers {
+		if matchTopic(pattern, routingKey) {
+			return handler, true
+		}
+	}
+	return nil, false
 }
 
 func (s *rmqSubscriber) Start(queueName string) error {
@@ -120,7 +157,7 @@ func (s *rmqSubscriber) runWorkerPool() {
 func (s *rmqSubscriber) workerLoop() {
 	defer s.wg.Done()
 	for msg := range s.msgChan {
-		handler, ok := s.handlers[msg.RoutingKey]
+		handler, ok := s.getHandler(msg.RoutingKey)
 		if !ok {
 			s.log.Warn("no handler", slog.String("key", msg.RoutingKey))
 			_ = msg.Nack(false, false)
@@ -130,8 +167,12 @@ func (s *rmqSubscriber) workerLoop() {
 		err := handler(ctx, msg)
 		cancel()
 		if err != nil {
-			s.log.Error("handler error", slog.String("key", msg.RoutingKey), slog.Any("err", err))
-			_ = msg.Nack(false, true)
+			s.log.Error("handler error",
+				slog.String("key", msg.RoutingKey),
+				slog.String("message_id", msg.MessageId),
+				slog.Any("error", err),
+			)
+			_ = msg.Nack(false, false)
 		} else {
 			_ = msg.Ack(false)
 		}
