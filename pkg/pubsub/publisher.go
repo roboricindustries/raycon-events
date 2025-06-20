@@ -67,10 +67,12 @@ func (r *rmqClient) Publish(ctx context.Context, key string, msg common.Envelope
 	msgID := msg.Meta.ID
 	if msgID == "" {
 		msgID = uuid.NewString()
+		msg.Meta.ID = msgID
 	}
 	cid := msg.Meta.CorrelationID
 	if cid == "" {
 		cid = uuid.NewString()
+		msg.Meta.CorrelationID = cid
 	}
 
 	err = ch.PublishWithContext(

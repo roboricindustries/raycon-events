@@ -34,6 +34,7 @@ type Handler func(context.Context, amqp091.Delivery) error
 
 type Subscriber interface {
 	RegisterHandler(routingKey string, handler Handler) error
+	MustRegisterHandler(routingKey string, handler Handler)
 	Start(queueName string) error
 	Close() error
 }
@@ -96,6 +97,12 @@ func (s *rmqSubscriber) getHandler(routingKey string) (Handler, bool) {
 		}
 	}
 	return nil, false
+}
+
+func (s *rmqSubscriber) MustRegisterHandler(routingKey string, handler Handler) {
+	if err := s.RegisterHandler(routingKey, handler); err != nil {
+		panic(fmt.Sprintf("failed to register handler for %q: %v", routingKey, err))
+	}
 }
 
 func (s *rmqSubscriber) Start(queueName string) error {
