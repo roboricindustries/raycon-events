@@ -4,7 +4,7 @@ import "time"
 
 type Meta struct {
 	// Trace / request correlation ID
-	CorrelationID *string `json:"correlation_id,omitempty"`
+	CorrelationID string `json:"correlation_id,omitempty"`
 	// Unique event ID
 	ID string `json:"id"`
 	// Emitting service and version
