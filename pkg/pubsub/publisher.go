@@ -22,10 +22,11 @@ type rmqClient struct {
 	log      *slog.Logger
 }
 
-func New(url, exchange string, logger *slog.Logger) (Publisher, error) {
-	conn, err := amqp091.Dial(url)
+func New(url, exchange string, logger *slog.Logger, retryAttempts int) (Publisher, error) {
+	conn, err := DialWithRetry(url, retryAttempts, time.Second, logger)
 	if err != nil {
-		return nil, err
+		logger.Error("RabbitMQ unavailable, using FallbackPublisher", slog.Any("error", err))
+		return NewFallback(logger), err
 	}
 	ch, err := conn.Channel()
 	if err != nil {
