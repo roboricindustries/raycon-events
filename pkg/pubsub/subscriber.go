@@ -129,6 +129,10 @@ func NewSubscriber(
 		conn.Close()
 		return nil, err
 	}
+	bufferCap := config.BufferCap
+	if bufferCap == 0 {
+		bufferCap = 10
+	}
 	return &rmqSubscriber{
 		conn:      conn,
 		ch:        ch,
@@ -136,7 +140,7 @@ func NewSubscriber(
 		log:       logger,
 		queueName: queueName,
 		handlers:  make(map[string]Handler),
-		msgChan:   make(chan amqp091.Delivery, config.BufferCap),
+		msgChan:   make(chan amqp091.Delivery, bufferCap),
 		done:      make(chan struct{}),
 		config:    config,
 	}, nil
@@ -193,7 +197,7 @@ func validateConfig(config *SubConfig) error {
 	return nil
 }
 
-func (s *rmqSubscriber) setupRetryQueue(queue amqp091.Queue, dqueueName string) error {
+func (s *rmqSubscriber) setupRetryQueue(dqueueName string) error {
 	if err := s.ch.ExchangeDeclare(
 		s.config.DLXName,
 		"direct",
@@ -210,9 +214,8 @@ func (s *rmqSubscriber) setupRetryQueue(queue amqp091.Queue, dqueueName string) 
 		ttl = 60000 // 10 min
 	}
 	args := amqp091.Table{
-		"x-message-ttl":             ttl,
-		"x-dead-letter-exchange":    s.config.DLXName,
-		"x-dead-letter-routing-key": queue.Name, // main queue is dlq for its dlq
+		"x-message-ttl":          ttl,
+		"x-dead-letter-exchange": s.exchange,
 	}
 
 	dq, err := s.ch.QueueDeclare(dqueueName, true, false, false, false, args)
@@ -235,8 +238,7 @@ func (s *rmqSubscriber) setupQueue(queueName string) error {
 	var args amqp091.Table
 	if s.config.DelayRetry {
 		args = amqp091.Table{
-			"x-dead-letter-exchange":    s.config.DLXName,
-			"x-dead-letter-routing-key": dqueueName, // main queue is dlq for its dlq
+			"x-dead-letter-exchange": s.config.DLXName,
 		}
 	}
 	q, err := s.ch.QueueDeclare(queueName, true, false, false, false, args)
@@ -249,7 +251,7 @@ func (s *rmqSubscriber) setupQueue(queueName string) error {
 		}
 	}
 	if s.config.DelayRetry {
-		if err := s.setupRetryQueue(q, dqueueName); err != nil {
+		if err := s.setupRetryQueue(dqueueName); err != nil {
 			return err
 		}
 		if err := s.ch.QueueBind(q.Name, q.Name, s.config.DLXName, false, nil); err != nil {
@@ -279,7 +281,11 @@ func (s *rmqSubscriber) setupQueue(queueName string) error {
 }
 
 func (s *rmqSubscriber) runWorkerPool() {
-	for i := 0; i < s.config.WorkerCnt; i++ {
+	workerCnt := s.config.WorkerCnt
+	if workerCnt == 0 {
+		workerCnt = 10
+	}
+	for i := 0; i < workerCnt; i++ {
 		s.wg.Add(1)
 		go s.workerLoop()
 	}
