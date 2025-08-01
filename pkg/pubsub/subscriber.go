@@ -223,7 +223,7 @@ func (s *rmqSubscriber) setupRetryQueue(dqueueName string) error {
 		return err
 	}
 	if err := s.ch.QueueBind(
-		dq.Name, dq.Name, s.config.DLXName, false, nil,
+		dq.Name, "#", s.config.DLXName, false, nil,
 	); err != nil {
 		return err
 	}
@@ -252,9 +252,6 @@ func (s *rmqSubscriber) setupQueue(queueName string) error {
 	}
 	if s.config.DelayRetry {
 		if err := s.setupRetryQueue(dqueueName); err != nil {
-			return err
-		}
-		if err := s.ch.QueueBind(q.Name, q.Name, s.config.DLXName, false, nil); err != nil {
 			return err
 		}
 	}
