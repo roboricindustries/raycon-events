@@ -2,6 +2,7 @@ package pubsub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -31,13 +32,43 @@ func matchTopic(pattern, topic string) bool {
 	return len(pParts) == len(tParts)
 }
 
+func getXDeathCount(msg amqp091.Delivery, queue string) int {
+	rawDeaths, ok := msg.Headers["x-death"]
+	if !ok {
+		return 0
+	}
+	deaths, ok := rawDeaths.([]any)
+	if !ok {
+		return 0
+	}
+	for _, d := range deaths {
+		if dmap, ok := d.(amqp091.Table); ok {
+			if q, _ := dmap["queue"].(string); q == queue {
+				if count, ok := dmap["count"].(int64); ok {
+					return int(count)
+				}
+			}
+		}
+	}
+	return 0
+}
+
 type Handler func(context.Context, amqp091.Delivery) error
 
 type Subscriber interface {
 	RegisterHandler(routingKey string, handler Handler) error
 	MustRegisterHandler(routingKey string, handler Handler)
-	Start(queueName string) error
+	Start() error
 	Close() error
+}
+
+type SubConfig struct {
+	BufferCap    int
+	WorkerCnt    int
+	DelayRetry   bool
+	DLXName      string
+	DLMessageTTL int
+	MaxRetry     int
 }
 
 type rmqSubscriber struct {
@@ -50,8 +81,8 @@ type rmqSubscriber struct {
 	done      chan struct{}
 	wg        sync.WaitGroup
 	once      sync.Once
-	bufferCap int
-	workerCnt int
+	queueName string
+	config    *SubConfig
 }
 
 func DialWithRetry(url string, attempts int, delay time.Duration, log *slog.Logger) (*amqp091.Connection, error) {
@@ -77,9 +108,14 @@ func DialWithRetry(url string, attempts int, delay time.Duration, log *slog.Logg
 
 func NewSubscriber(
 	url, exchange string,
+	queueName string,
 	logger *slog.Logger,
-	bufferCap, workerCnt, retryAttempts int,
+	config *SubConfig, retryAttempts int,
+
 ) (Subscriber, error) {
+	if err := validateConfig(config); err != nil {
+		return nil, err
+	}
 	conn, err := DialWithRetry(url, retryAttempts, time.Second, logger)
 	if err != nil {
 		return nil, err
@@ -98,11 +134,11 @@ func NewSubscriber(
 		ch:        ch,
 		exchange:  exchange,
 		log:       logger,
+		queueName: queueName,
 		handlers:  make(map[string]Handler),
-		msgChan:   make(chan amqp091.Delivery, bufferCap),
+		msgChan:   make(chan amqp091.Delivery, config.BufferCap),
 		done:      make(chan struct{}),
-		bufferCap: bufferCap,
-		workerCnt: workerCnt,
+		config:    config,
 	}, nil
 }
 
@@ -131,30 +167,92 @@ func (s *rmqSubscriber) MustRegisterHandler(routingKey string, handler Handler) 
 	}
 }
 
-func (s *rmqSubscriber) Start(queueName string) error {
+func (s *rmqSubscriber) Start() error {
 	var startErr error
 	s.once.Do(func() {
-		if err := s.setupQueue(queueName); err != nil {
+		if err := s.setupQueue(s.queueName); err != nil {
 			startErr = err
 			return
 		}
 
 		s.runWorkerPool()
-		s.log.Info("subscriber started", slog.String("queue", queueName))
+		s.log.Info("subscriber started", slog.String("queue", s.queueName))
 	})
 	return startErr
+}
+
+func validateConfig(config *SubConfig) error {
+	if config == nil {
+		return nil
+	}
+	if config.DelayRetry {
+		if config.DLXName == "" {
+			return errors.New("dead letter exchange name should exist")
+		}
+	}
+	return nil
+}
+
+func (s *rmqSubscriber) setupRetryQueue(queue amqp091.Queue, dqueueName string) error {
+	if err := s.ch.ExchangeDeclare(
+		s.config.DLXName,
+		"direct",
+		true,
+		false,
+		false,
+		false,
+		nil,
+	); err != nil {
+		return err
+	}
+	ttl := s.config.DLMessageTTL
+	if ttl == 0 {
+		ttl = 60000 // 10 min
+	}
+	args := amqp091.Table{
+		"x-message-ttl":             ttl,
+		"x-dead-letter-exchange":    s.config.DLXName,
+		"x-dead-letter-routing-key": queue.Name, // main queue is dlq for its dlq
+	}
+
+	dq, err := s.ch.QueueDeclare(dqueueName, true, false, false, false, args)
+	if err != nil {
+		return err
+	}
+	if err := s.ch.QueueBind(
+		dq.Name, dq.Name, s.config.DLXName, false, nil,
+	); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *rmqSubscriber) setupQueue(queueName string) error {
 	if err := s.ch.Qos(10, 0, false); err != nil {
 		return err
 	}
-	q, err := s.ch.QueueDeclare(queueName, true, false, false, false, nil)
+	dqueueName := "dead_" + queueName
+	var args amqp091.Table
+	if s.config.DelayRetry {
+		args = amqp091.Table{
+			"x-dead-letter-exchange":    s.config.DLXName,
+			"x-dead-letter-routing-key": dqueueName, // main queue is dlq for its dlq
+		}
+	}
+	q, err := s.ch.QueueDeclare(queueName, true, false, false, false, args)
 	if err != nil {
 		return err
 	}
 	for key := range s.handlers {
 		if err := s.ch.QueueBind(q.Name, key, s.exchange, false, nil); err != nil {
+			return err
+		}
+	}
+	if s.config.DelayRetry {
+		if err := s.setupRetryQueue(q, dqueueName); err != nil {
+			return err
+		}
+		if err := s.ch.QueueBind(q.Name, q.Name, s.config.DLXName, false, nil); err != nil {
 			return err
 		}
 	}
@@ -181,7 +279,7 @@ func (s *rmqSubscriber) setupQueue(queueName string) error {
 }
 
 func (s *rmqSubscriber) runWorkerPool() {
-	for i := 0; i < s.workerCnt; i++ {
+	for i := 0; i < s.config.WorkerCnt; i++ {
 		s.wg.Add(1)
 		go s.workerLoop()
 	}
@@ -190,6 +288,14 @@ func (s *rmqSubscriber) runWorkerPool() {
 func (s *rmqSubscriber) workerLoop() {
 	defer s.wg.Done()
 	for msg := range s.msgChan {
+		if (getXDeathCount(msg, s.queueName) > s.config.MaxRetry) && (s.config.MaxRetry != 0) {
+			s.log.Warn("discarding message due to retry limit",
+				slog.String("key", msg.RoutingKey),
+				slog.String("message_id", msg.MessageId),
+				slog.Int("retry_count", getXDeathCount(msg, s.queueName)),
+			)
+			_ = msg.Ack(false) // discard msg
+		}
 		handler, ok := s.getHandler(msg.RoutingKey)
 		if !ok {
 			s.log.Warn("no handler", slog.String("key", msg.RoutingKey))
