@@ -3,7 +3,6 @@ package pubsub
 import (
 	"context"
 	"fmt"
-	"math"
 	"strings"
 	"sync"
 	"time"
@@ -95,14 +94,12 @@ type Subscriber interface {
 
 // params to use in NewSubscriber
 type SubscriberOptions struct {
-	URL           string
-	Conn          *amqp091.Connection
-	Exchange      string
-	Module        string
-	QueueName     string
-	Logger        *slog.Logger
-	Config        *SubscriberConfig
-	RetryAttempts int
+	Conn      *amqp091.Connection
+	Exchange  string
+	Module    string
+	QueueName string
+	Logger    *slog.Logger
+	Config    *SubscriberConfig
 }
 
 type SubscriberConfig struct {
@@ -144,28 +141,6 @@ type rmqSubscriber struct {
 	done     chan struct{}
 	wg       sync.WaitGroup
 	once     sync.Once
-}
-
-// connect to rabbit mq with retries
-func DialWithRetry(url string, attempts int, delay time.Duration, log *slog.Logger) (*amqp091.Connection, error) {
-	for i := 1; i <= attempts; i++ {
-		conn, err := amqp091.Dial(url)
-		if err == nil {
-			if i > 1 {
-				log.Info("rabbit connected", slog.Int("attempt", i))
-			}
-			return conn, nil
-		}
-
-		log.Warn("rabbit dial failed",
-			slog.Int("attempt", i),
-			slog.Duration("sleep", delay),
-			slog.Any("error", err),
-		)
-
-		time.Sleep(delay * time.Duration(math.Pow(2, float64(i))))
-	}
-	return nil, fmt.Errorf("failed to connect to RabbitMQ after %d attempts", attempts)
 }
 
 // subscriber creation function

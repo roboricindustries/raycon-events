@@ -22,8 +22,8 @@ type rmqClient struct {
 	log      *slog.Logger
 }
 
-func New(url, exchange string, logger *slog.Logger, retryAttempts int) (Publisher, error) {
-	conn, err := DialWithRetry(url, retryAttempts, time.Second, logger)
+func New(connOps ConnectionOptions, exchange string, logger *slog.Logger) (Publisher, error) {
+	conn, err := DialWithRetry(connOps)
 	if err != nil {
 		logger.Error("RabbitMQ unavailable, using FallbackPublisher", slog.Any("error", err))
 		return NewFallback(logger), err
