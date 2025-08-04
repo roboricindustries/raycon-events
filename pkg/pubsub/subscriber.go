@@ -22,6 +22,7 @@ const (
 	defaultMaxRetry     = 10
 )
 
+// matches rabbit msg topics with handler patterns
 func matchTopic(pattern, topic string) bool {
 	pParts := strings.Split(pattern, ".")
 	tParts := strings.Split(topic, ".")
@@ -40,6 +41,7 @@ func matchTopic(pattern, topic string) bool {
 	return len(pParts) == len(tParts)
 }
 
+// retrieve x-death number from a msg for a queue
 func GetXDeathCount(msg amqp091.Delivery, queue string) int {
 	rawDeaths, ok := msg.Headers["x-death"]
 	if !ok {
@@ -61,6 +63,7 @@ func GetXDeathCount(msg amqp091.Delivery, queue string) int {
 	return 0
 }
 
+// nil ref guard and apply defaults to config
 func normalizeConfig(cfg *SubscriberConfig) *SubscriberConfig {
 	if cfg == nil {
 		cfg = &SubscriberConfig{}
@@ -87,8 +90,10 @@ type Subscriber interface {
 	MustRegisterHandler(routingKey string, handler Handler)
 	Start() error
 	Close() error
+	IsConnected() bool
 }
 
+// params to use in NewSubscriber
 type SubscriberOptions struct {
 	URL           string
 	Exchange      string
@@ -96,7 +101,6 @@ type SubscriberOptions struct {
 	QueueName     string
 	Logger        *slog.Logger
 	Config        *SubscriberConfig
-	EnableRetry   bool
 	RetryAttempts int
 }
 
@@ -113,6 +117,7 @@ type RetryPolicy struct {
 	MaxAttempts int
 }
 
+// main subscriber struct
 type rmqSubscriber struct {
 	// config
 	config *SubscriberConfig
@@ -140,6 +145,7 @@ type rmqSubscriber struct {
 	once     sync.Once
 }
 
+// connect to rabbit mq with retries
 func DialWithRetry(url string, attempts int, delay time.Duration, log *slog.Logger) (*amqp091.Connection, error) {
 	for i := 1; i <= attempts; i++ {
 		conn, err := amqp091.Dial(url)
@@ -161,10 +167,8 @@ func DialWithRetry(url string, attempts int, delay time.Duration, log *slog.Logg
 	return nil, fmt.Errorf("failed to connect to RabbitMQ after %d attempts", attempts)
 }
 
-func NewSubscriber(
-	options SubscriberOptions,
-
-) (Subscriber, error) {
+// subscriber creation function
+func NewSubscriber(options SubscriberOptions) (Subscriber, error) {
 	cfg := normalizeConfig(options.Config)
 	conn, err := DialWithRetry(options.URL, options.RetryAttempts, time.Second, options.Logger)
 	if err != nil {
@@ -213,10 +217,7 @@ func NewSubscriber(
 	}, nil
 }
 
-func (s *rmqSubscriber) logger() *slog.Logger {
-	return s.log.With(slog.String("module", s.module), slog.String("queue", s.queue), slog.String("exchange", s.exchange))
-}
-
+// registers handler for a routing key
 func (s *rmqSubscriber) RegisterHandler(routingKey string, handler Handler) error {
 	for existingHandler := range s.handlers {
 		if matchTopic(routingKey, existingHandler) || matchTopic(existingHandler, routingKey) {
@@ -227,6 +228,7 @@ func (s *rmqSubscriber) RegisterHandler(routingKey string, handler Handler) erro
 	return nil
 }
 
+// finds a handler for a msg by its routing key
 func (s *rmqSubscriber) getHandler(routingKey string) (Handler, bool) {
 	for pattern, handler := range s.handlers {
 		if matchTopic(pattern, routingKey) {
@@ -236,26 +238,29 @@ func (s *rmqSubscriber) getHandler(routingKey string) (Handler, bool) {
 	return nil, false
 }
 
+// panics if error on handler register
 func (s *rmqSubscriber) MustRegisterHandler(routingKey string, handler Handler) {
 	if err := s.RegisterHandler(routingKey, handler); err != nil {
 		panic(fmt.Sprintf("failed to register handler for %q: %v", routingKey, err))
 	}
 }
 
+// main entrypoint to start listening
 func (s *rmqSubscriber) Start() error {
 	var startErr error
 	s.once.Do(func() {
-		if err := s.setupQueue(); err != nil {
+		if err := s.startConsume(); err != nil {
 			startErr = err
 			return
 		}
 
 		s.runWorkerPool()
-		s.logger().Info("subscriber started")
+		s.log.Info("subscriber started")
 	})
 	return startErr
 }
 
+// helper function to bind all routing keys for a queue to an exchange
 func (s *rmqSubscriber) bindHandlersToExchange(queueName, exchange string) error {
 	for key := range s.handlers {
 		if err := s.ch.QueueBind(queueName, key, exchange, false, nil); err != nil {
@@ -265,26 +270,40 @@ func (s *rmqSubscriber) bindHandlersToExchange(queueName, exchange string) error
 	return nil
 }
 
+// sends msg to the final queue
 func (s *rmqSubscriber) discard(msg amqp091.Delivery) {
-	s.logger().Warn(
+	const op = "rmqSubscriber.discard"
+	log := s.log.With(slog.String("op", op))
+
+	log.Warn(
 		"discarding msg",
 		slog.String("key", msg.RoutingKey),
 		slog.String("message_id", msg.MessageId),
 	)
-	_ = s.publish(context.Background(), s.finalQueue, msg)
-	_ = msg.Ack(false)
+	err := s.publish(context.Background(), s.finalExchange, msg)
+	if err != nil {
+		log.Warn("err during publishing to final queue", slog.Any("error", err))
+	}
+	err = msg.Ack(false)
+	if err != nil {
+		log.Warn("err during Ack", slog.Any("error", err))
+	}
 }
 
+// checks if msg should be discarded
 func (s *rmqSubscriber) shouldDiscard(msg amqp091.Delivery) bool {
+	// if retry enabled, max attemts set and x-death header counter
+	// exceeds max attempts
 	return s.config.Retry.Enabled &&
 		s.config.Retry.MaxAttempts != 0 &&
 		GetXDeathCount(msg, s.queue) > s.config.Retry.MaxAttempts
 }
 
-func (s *rmqSubscriber) publish(ctx context.Context, queue string, msg amqp091.Delivery) error {
+// helper function to publish msg to an exchange
+func (s *rmqSubscriber) publish(ctx context.Context, exchange string, msg amqp091.Delivery) error {
 	return s.ch.PublishWithContext(
 		ctx,
-		queue,
+		exchange,
 		"",
 		false, false,
 		amqp091.Publishing{
@@ -301,11 +320,8 @@ func (s *rmqSubscriber) publish(ctx context.Context, queue string, msg amqp091.D
 	)
 }
 
+// declares and binds main queue, handles retry logic if on
 func (s *rmqSubscriber) setupQueue() error {
-	if err := s.ch.Qos(10, 0, false); err != nil {
-		return err
-	}
-
 	var args amqp091.Table
 	if s.config.Retry.Enabled {
 		args = amqp091.Table{
@@ -335,7 +351,20 @@ func (s *rmqSubscriber) setupQueue() error {
 			return err
 		}
 	}
-	msgs, err := s.ch.Consume(q.Name, "", false, false, false, false, nil)
+	return nil
+}
+
+// starts consuming and routing to msg channel
+func (s *rmqSubscriber) startConsume() error {
+	if err := s.ch.Qos(10, 0, false); err != nil {
+		return err
+	}
+
+	if err := s.setupQueue(); err != nil {
+		return err
+	}
+
+	msgs, err := s.ch.Consume(s.queue, "", false, false, false, false, nil)
 	if err != nil {
 		return err
 	}
@@ -357,6 +386,7 @@ func (s *rmqSubscriber) setupQueue() error {
 	return nil
 }
 
+// starts worker pool
 func (s *rmqSubscriber) runWorkerPool() {
 	workerCnt := s.config.WorkerCnt
 	if workerCnt == 0 {
@@ -368,7 +398,11 @@ func (s *rmqSubscriber) runWorkerPool() {
 	}
 }
 
+// main msg handler
 func (s *rmqSubscriber) workerLoop() {
+	const op = "rmqSubscriber.workerLoop"
+	log := s.log.With(slog.String("op", op))
+
 	defer s.wg.Done()
 	for msg := range s.msgChan {
 		if s.config.Retry.Enabled {
@@ -379,7 +413,7 @@ func (s *rmqSubscriber) workerLoop() {
 		}
 		handler, ok := s.getHandler(msg.RoutingKey)
 		if !ok {
-			s.logger().Warn("no handler", slog.String("key", msg.RoutingKey))
+			log.Warn("no handler", slog.String("key", msg.RoutingKey))
 			s.discard(msg)
 			continue
 		}
@@ -387,7 +421,7 @@ func (s *rmqSubscriber) workerLoop() {
 		err := handler(ctx, msg)
 		cancel()
 		if err != nil {
-			s.logger().Error("handler error",
+			log.Error("handler error",
 				slog.String("key", msg.RoutingKey),
 				slog.String("message_id", msg.MessageId),
 				slog.Any("error", err),
@@ -399,9 +433,18 @@ func (s *rmqSubscriber) workerLoop() {
 	}
 }
 
+// gracefull shutdown
 func (s *rmqSubscriber) Close() error {
 	close(s.done)
 	s.wg.Wait()
 	_ = s.ch.Close()
 	return s.conn.Close()
+}
+
+// health checks
+func (s *rmqSubscriber) IsConnected() bool {
+	if s.conn == nil || s.ch == nil {
+		return false
+	}
+	return !s.conn.IsClosed() && !s.ch.IsClosed()
 }
