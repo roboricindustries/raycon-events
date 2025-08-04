@@ -48,7 +48,7 @@ func SetupRetryInfra(cfg *RetryConfig) error {
 		return err
 	}
 
-	fq, err := cfg.Channel.QueueDeclare(cfg.FinalQueue, true, false, false, false, args)
+	fq, err := cfg.Channel.QueueDeclare(cfg.FinalQueue, true, false, false, false, nil)
 	if err != nil {
 		return err
 	}
