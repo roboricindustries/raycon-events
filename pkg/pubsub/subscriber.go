@@ -96,6 +96,7 @@ type Subscriber interface {
 // params to use in NewSubscriber
 type SubscriberOptions struct {
 	URL           string
+	Conn          *amqp091.Connection
 	Exchange      string
 	Module        string
 	QueueName     string
@@ -170,17 +171,14 @@ func DialWithRetry(url string, attempts int, delay time.Duration, log *slog.Logg
 // subscriber creation function
 func NewSubscriber(options SubscriberOptions) (Subscriber, error) {
 	cfg := normalizeConfig(options.Config)
-	conn, err := DialWithRetry(options.URL, options.RetryAttempts, time.Second, options.Logger)
+
+	ch, err := options.Conn.Channel()
 	if err != nil {
-		return nil, err
-	}
-	ch, err := conn.Channel()
-	if err != nil {
-		conn.Close()
+		options.Conn.Close()
 		return nil, err
 	}
 	if err := ch.ExchangeDeclare(options.Exchange, "topic", true, false, false, false, nil); err != nil {
-		conn.Close()
+		options.Conn.Close()
 		return nil, err
 	}
 	var logger *slog.Logger
@@ -199,7 +197,7 @@ func NewSubscriber(options SubscriberOptions) (Subscriber, error) {
 
 	logger = logger.With(slog.String("module", options.Module), slog.String("queue", queueName), slog.String("exchange", options.Exchange))
 	return &rmqSubscriber{
-		conn:          conn,
+		conn:          options.Conn,
 		ch:            ch,
 		module:        options.Module,
 		exchange:      options.Exchange,
