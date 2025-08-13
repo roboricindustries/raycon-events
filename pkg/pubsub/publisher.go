@@ -16,42 +16,39 @@ type Publisher interface {
 	Close() error
 }
 
+type PublisherOptions struct {
+	Exchange        string // required
+	ExchangeType    string // default "topic"
+	DeclareExchange bool   // if false, assumes exchange already exists
+}
+
 type rmqClient struct {
 	conn     *amqp091.Connection
 	exchange string
 	log      *slog.Logger
 }
 
-func New(connOps ConnectionOptions, exchange string, logger *slog.Logger) (Publisher, error) {
-	conn, err := DialWithRetry(connOps)
-	if err != nil {
-		logger.Error("RabbitMQ unavailable, using FallbackPublisher", slog.Any("error", err))
-		return NewFallback(logger), err
-	}
-	ch, err := conn.Channel()
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
-	defer ch.Close()
-	if err := ch.ExchangeDeclare(
-		exchange, "topic", true, false, false, false, nil,
-	); err != nil {
-		conn.Close()
-		return nil, err
+func NewPublisher(conn *amqp091.Connection, logger *slog.Logger, opts PublisherOptions) (Publisher, error) {
+	if opts.ExchangeType == "" {
+		opts.ExchangeType = "topic"
 	}
 
-	if err := ch.Confirm(false); err != nil {
-		conn.Close()
-		return nil, err
+	if opts.Exchange != "" && opts.DeclareExchange {
+		ch, err := conn.Channel()
+		if err != nil {
+			return nil, err
+		}
+		if err := ch.ExchangeDeclare(opts.Exchange, opts.ExchangeType, true, false, false, false, nil); err != nil {
+			_ = ch.Close()
+			return nil, err
+		}
+		_ = ch.Close()
 	}
-
 	return &rmqClient{
 		conn:     conn,
-		exchange: exchange,
 		log:      logger,
+		exchange: opts.Exchange,
 	}, nil
-
 }
 
 func (r *rmqClient) Publish(ctx context.Context, key string, msg common.Envelope) error {
@@ -60,20 +57,20 @@ func (r *rmqClient) Publish(ctx context.Context, key string, msg common.Envelope
 		return err
 	}
 	defer ch.Close()
+
+	if msg.Meta.ID == "" {
+		msg.Meta.ID = uuid.NewString()
+	}
+	if msg.Meta.CorrelationID == "" {
+		msg.Meta.CorrelationID = uuid.NewString()
+	}
+	if msg.Meta.Time.IsZero() {
+		msg.Meta.Time = time.Now()
+	}
+
 	body, err := json.Marshal(msg)
 	if err != nil {
 		return err
-	}
-
-	msgID := msg.Meta.ID
-	if msgID == "" {
-		msgID = uuid.NewString()
-		msg.Meta.ID = msgID
-	}
-	cid := msg.Meta.CorrelationID
-	if cid == "" {
-		cid = uuid.NewString()
-		msg.Meta.CorrelationID = cid
 	}
 
 	err = ch.PublishWithContext(
@@ -81,9 +78,9 @@ func (r *rmqClient) Publish(ctx context.Context, key string, msg common.Envelope
 		amqp091.Publishing{
 			ContentType:   "application/json",
 			DeliveryMode:  amqp091.Persistent,
-			MessageId:     msgID,
-			CorrelationId: cid,
-			Timestamp:     time.Now(),
+			MessageId:     msg.Meta.ID,
+			CorrelationId: msg.Meta.CorrelationID,
+			Timestamp:     msg.Meta.Time,
 			Body:          body,
 		},
 	)
@@ -94,5 +91,5 @@ func (r *rmqClient) Publish(ctx context.Context, key string, msg common.Envelope
 }
 
 func (e *rmqClient) Close() error {
-	return e.conn.Close()
+	return nil
 }

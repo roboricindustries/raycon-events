@@ -1,0 +1,74 @@
+{
+  "$id": "notification_log.v1.data.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NotificationLog",
+  "type": "object",
+  "required": [
+    "notification_code",
+    "channels",
+    "recipient_role",
+    "recipient_id",
+    "params",
+    "options",
+    "meta",
+    "created_at",
+    "schema_version"
+  ],
+  "properties": {
+    "notification_code": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Semantic code used to pick templates, e.g., crm.lead.converted"
+    },
+    "company_id": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "Owner company; null for system/global"
+    },
+    "channels": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "description": "Target channel identifier (service-defined)",
+        "examples": ["email", "telegram", "inapp", "sms", "webhook"]
+      },
+      "description": "Original list of requested channels"
+    },
+    "recipient_role": {
+      "type": "string",
+      "description": "DB enum recipient_role_enum value"
+    },
+    "recipient_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Recipient entity ID"
+    },
+    "scheduled_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "Do not send before this moment"
+    },
+    "expires_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "Do not send after this moment"
+    },
+    "params": {
+      "type": "object",
+      "description": "Variables for template rendering (free-form)",
+      "additionalProperties": true
+    },
+    "options": {
+      "type": "object",
+      "description": "Dispatcher → CP instructions (per-channel options)",
+      "additionalProperties": true
+    },
+    "meta": {
+      "type": "object",
+      "description": "Extra metadata for analytics/auditing",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}
