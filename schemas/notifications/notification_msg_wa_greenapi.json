@@ -1,0 +1,28 @@
+{
+  "$id": "cp.notification.wa.greenapi.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "allOf": [
+    { "$ref": "cp.notification.core.v1.json" },
+    {
+      "type": "object",
+      "properties": {
+        "options": {
+          "type": "object",
+          "properties": {
+            "wa.greenapi": {
+              "type": "object",
+              "required": ["instance_id"],
+              "properties": {
+                "instance_id": { "type": "integer", "minimum": 1 }
+              },
+              "additionalProperties": true
+            }
+          },
+          "required": ["wa.greenapi"],
+          "additionalProperties": true
+        }
+      },
+      "required": ["options"]
+    }
+  ]
+}

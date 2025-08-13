@@ -4,7 +4,7 @@
 //    notificationLog, err := UnmarshalNotificationLog(bytes)
 //    bytes, err = notificationLog.Marshal()
 
-package main
+package notifications
 
 import (
 	"encoding/json"
