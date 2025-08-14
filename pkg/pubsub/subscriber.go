@@ -110,7 +110,6 @@ type SubscriberConfig struct {
 
 type RetryPolicy struct {
 	Enabled     bool
-	DLXExchange string
 	TTL         time.Duration
 	MaxAttempts int
 }

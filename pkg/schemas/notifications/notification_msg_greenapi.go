@@ -13,7 +13,6 @@ type WAGreenAPIOptions struct {
 	InstanceID uint `json:"instance_id"`
 }
 
-// If you only need WA for now:
 type WAGreenAPIMsg struct {
 	common.Core
 }
