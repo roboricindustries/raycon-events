@@ -3,6 +3,7 @@ package pubsub
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 
 type Publisher interface {
 	Publish(ctx context.Context, key string, msg common.Envelope) error
+	PublishTo(ctx context.Context, exchange, key string, msg common.Envelope) error
+
 	Close() error
 }
 
@@ -51,7 +54,8 @@ func NewPublisher(conn *amqp091.Connection, logger *slog.Logger, opts PublisherO
 	}, nil
 }
 
-func (r *rmqClient) Publish(ctx context.Context, key string, msg common.Envelope) error {
+func (r *rmqClient) publishMsg(ctx context.Context, exchange, key string, msg common.Envelope) error {
+
 	ch, err := r.conn.Channel()
 	if err != nil {
 		return err
@@ -74,7 +78,7 @@ func (r *rmqClient) Publish(ctx context.Context, key string, msg common.Envelope
 	}
 
 	err = ch.PublishWithContext(
-		ctx, r.exchange, key, false, false,
+		ctx, exchange, key, false, false,
 		amqp091.Publishing{
 			ContentType:   "application/json",
 			DeliveryMode:  amqp091.Persistent,
@@ -85,11 +89,24 @@ func (r *rmqClient) Publish(ctx context.Context, key string, msg common.Envelope
 		},
 	)
 	if err == nil {
-		r.log.Info("published", slog.String("key", key), slog.String("exchange", r.exchange))
+		r.log.Debug("published", slog.String("key", key), slog.String("exchange", exchange))
 	}
 	return err
 }
 
+func (r *rmqClient) Publish(ctx context.Context, key string, msg common.Envelope) error {
+	if r.exchange == "" {
+		return fmt.Errorf("default exchange is not configured")
+	}
+	return r.publishMsg(ctx, r.exchange, key, msg)
+}
+
+func (r *rmqClient) PublishTo(ctx context.Context, exchange, key string, msg common.Envelope) error {
+	if exchange == "" {
+		return fmt.Errorf("exchange required")
+	}
+	return r.publishMsg(ctx, exchange, key, msg)
+}
 func (e *rmqClient) Close() error {
 	return nil
 }
