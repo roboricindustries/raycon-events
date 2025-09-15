@@ -18,7 +18,7 @@ type ConnectionOptions struct {
 	Logger        *slog.Logger
 }
 
-const MaxDelay = 60 //seconds
+const MaxDelay = 60 * time.Second //seconds
 
 // DialWithRetry tries to connect to RabbitMQ with exponential backoff.
 // It respects context cancellation for graceful shutdown.
