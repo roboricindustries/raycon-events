@@ -16,6 +16,11 @@ func (p *FallbackPublisher) Publish(ctx context.Context, key string, msg common.
 	return nil
 }
 
+func (p *FallbackPublisher) PublishTo(ctx context.Context, exchange, key string, msg common.Envelope) error {
+	p.log.Warn("FallbackPublisher: skipped PublishTo", slog.String("key", key), slog.String("exchange", exchange))
+	return nil
+}
+
 func (p *FallbackPublisher) Close() error {
 	return nil
 }
