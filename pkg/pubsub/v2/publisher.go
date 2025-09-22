@@ -1,0 +1,54 @@
+package pubsub
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/roboricindustries/raycon-events/pkg/schemas/common"
+)
+
+// PublishJSON publishes an Envelope as JSON with proper AMQP headers.
+func (c *Client) PublishJSON(ctx context.Context, exchange, routingKey string, env common.Envelope) error {
+	if exchange == "" {
+		exchange = c.config.DefaultDeliveryExchange
+	}
+	if routingKey == "" {
+		routingKey = c.config.DefaultDeliverRoutingKey
+	}
+
+	// Ensure metadata consistency
+	if env.Meta.ID == "" {
+		return fmt.Errorf("envelope.Meta.ID is required")
+	}
+	if env.Meta.CorrelationID == "" {
+		env.Meta.CorrelationID = env.Meta.ID // fallback to ID if no correlation
+	}
+	if env.Meta.Time.IsZero() {
+		env.Meta.Time = time.Now().UTC()
+	}
+
+	body, err := json.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("marshal envelope: %w", err)
+	}
+
+	ch, err := c.pool.Borrow(ctx, c.config.PoolRetryDelayMs)
+	if err != nil {
+		return fmt.Errorf("borrow channel: %w", err)
+	}
+	defer c.pool.Return(ch)
+
+	return ch.PublishWithContext(ctx, exchange, routingKey, false, false, amqp.Publishing{
+		ContentType:   "application/json",
+		Body:          body,
+		DeliveryMode:  amqp.Persistent,
+		MessageId:     env.Meta.ID,
+		CorrelationId: env.Meta.CorrelationID,
+		Type:          env.Meta.Type,
+		Timestamp:     env.Meta.Time,
+		AppId:         FirstNonEmpty(c.config.Queues["producer"], ""), // or c.config.DefaultProducer
+	})
+}
