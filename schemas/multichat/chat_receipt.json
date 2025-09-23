@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ChatReceiptV1",
+  "type": "object",
+  "properties": {
+    "tenant": { "$ref": "#/$defs/TenantRef" },
+    "provider": { "$ref": "#/$defs/ProviderRef" },
+    "conversation": { "$ref": "#/$defs/ConversationKey" },
+    "outbound_id": { "type": "string" },
+    "message": { "$ref": "#/$defs/MessageKey" },
+    "status": {
+      "type": "string",
+      "enum": ["accepted", "rejected", "sent", "delivered", "read", "failed"]
+    },
+    "at_processor": { "type": "string", "format": "date-time" },
+    "at_provider": { "type": "string", "format": "date-time" },
+    "request": {
+      "type": "object",
+      "properties": {
+        "kind": { "type": "string" },
+        "text_preview": { "type": "string" },
+        "content_fingerprint": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "details": { "type": "string" }
+      },
+      "required": ["code"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["tenant", "provider", "conversation", "status", "request"],
+  "$defs": {
+    "TenantRef": { "$ref": "TenantRef" },
+    "ProviderRef": { "$ref": "ProviderRef" },
+    "ConversationKey": { "$ref": "ConversationKey" },
+    "MessageKey": { "$ref": "MessageKey" }
+  }
+}

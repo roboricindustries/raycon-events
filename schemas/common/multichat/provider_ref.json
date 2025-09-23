@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProviderRef",
+  "type": "object",
+  "properties": {
+    "provider": { "type": "string" },
+    "instance_id": { "type": "string" }
+  },
+  "required": ["provider", "instance_id"]
+}

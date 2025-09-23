@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TenantRef",
+  "type": "object",
+  "properties": {
+    "company_id": { "type": "integer" },
+    "counterparty_id": { "type": "integer" }
+  },
+  "required": ["company_id", "counterparty_id"]
+}

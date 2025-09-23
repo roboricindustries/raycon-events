@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ChatInboundV1",
+  "type": "object",
+  "properties": {
+    "tenant": { "$ref": "#/$defs/TenantRef" },
+    "provider": { "$ref": "#/$defs/ProviderRef" },
+    "conversation": { "$ref": "#/$defs/ConversationKey" },
+    "message": { "$ref": "#/$defs/MessageKey" },
+    "kind": { "type": "string" },
+    "at_provider": { "type": "string", "format": "date-time" },
+    "received_at": { "type": "string", "format": "date-time" },
+    "body": { "$ref": "#/$defs/BodyDescriptor" }
+  },
+  "required": ["tenant", "provider", "conversation", "message", "kind", "at_provider", "received_at", "body"],
+  "$defs": {
+    "TenantRef": { "$ref": "TenantRef" },
+    "ProviderRef": { "$ref": "ProviderRef" },
+    "ConversationKey": { "$ref": "ConversationKey" },
+    "MessageKey": { "$ref": "MessageKey" },
+    "BodyDescriptor": { "$ref": "BodyDescriptor" }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ConversationKey",
+  "type": "object",
+  "properties": {
+    "conversation_id": { "type": "integer" },
+    "provider_chat_id": { "type": "string" }
+  },
+  "required": ["conversation_id", "provider_chat_id"]
+}

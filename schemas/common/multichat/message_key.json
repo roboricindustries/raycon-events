@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MessageKey",
+  "type": "object",
+  "properties": {
+    "provider_message_id": { "type": "string" }
+  },
+  "required": ["provider_message_id"]
+}

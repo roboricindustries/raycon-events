@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ChatOutboundToProcessorV1",
+  "type": "object",
+  "properties": {
+    "tenant": { "$ref": "#/$defs/TenantRef" },
+    "provider": { "$ref": "#/$defs/ProviderRef" },
+    "conversation": { "$ref": "#/$defs/ConversationKey" },
+    "outbound_id": { "type": "string", "format": "uuid" },
+    "seq": { "type": "integer" },
+    "kind": { "type": "string" },
+    "text": { "type": "string" },
+    "at_hub": { "type": "string", "format": "date-time" }
+  },
+  "required": ["tenant", "provider", "conversation", "outbound_id", "seq", "kind", "text", "at_hub"],
+  "$defs": {
+    "TenantRef": { "$ref": "TenantRef" },
+    "ProviderRef": { "$ref": "ProviderRef" },
+    "ConversationKey": { "$ref": "ConversationKey" }
+  }
+}

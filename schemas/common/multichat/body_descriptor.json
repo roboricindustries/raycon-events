@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BodyDescriptor",
+  "type": "object",
+  "properties": {
+    "has_text": { "type": "boolean" },
+    "text_preview": { "type": "string", "maxLength": 512 },
+    "media_kinds": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "required": ["has_text"]
+}
