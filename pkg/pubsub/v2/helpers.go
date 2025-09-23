@@ -93,3 +93,31 @@ func SafeClose(ch *amqp.Channel) error {
 	defer func() { _ = recover() }()
 	return ch.Close()
 }
+
+func deadEx(s ConsumerSpec) string {
+	if s.Retry != nil && s.Retry.DeadExchange != "" {
+		return s.Retry.DeadExchange
+	}
+	return s.Queue + ".dead"
+}
+
+func deadQ(s ConsumerSpec) string {
+	if s.Retry != nil && s.Retry.DeadQueue != "" {
+		return s.Retry.DeadQueue
+	}
+	return s.Queue + ".dead"
+}
+
+func finalEx(s ConsumerSpec) string {
+	if s.Retry != nil && s.Retry.FinalExchange != "" {
+		return s.Retry.FinalExchange
+	}
+	return s.Queue + ".final"
+}
+
+func finalQ(s ConsumerSpec) string {
+	if s.Retry != nil && s.Retry.FinalQueue != "" {
+		return s.Retry.FinalQueue
+	}
+	return s.Queue + ".final"
+}

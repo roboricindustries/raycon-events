@@ -29,12 +29,13 @@ type RetrySpec struct {
 
 // ConsumerSpec defines a single consumer.
 type ConsumerSpec struct {
-	Name       string
-	Exchange   string // main exchange to bind
-	Queue      string
-	BindingKey string // routing key for main bind & requeue
-	Prefetch   int    // 0 => use global default
-	Retry      *RetrySpec
+	Name         string
+	Exchange     string // main exchange to bind
+	ExchangeKind string // kind of exchange default: topic
+	Queue        string
+	BindingKey   string // routing key for main bind & requeue
+	Prefetch     int    // 0 => use global default
+	Retry        *RetrySpec
 
 	// If true, poison messages are published to final DLQ then Acked.
 	// If false, poison messages are just Acked (no copy kept).
@@ -234,6 +235,14 @@ func (c *Client) startConsumer(ctx context.Context, spec ConsumerSpec) error {
 
 // declareConsumerTopology declares main queue/bind, DLX/TTL queue, and final queue.
 func (c *Client) declareConsumerTopology(ch *amqp.Channel, s ConsumerSpec) error {
+	// Declare exchange
+	exKind := s.ExchangeKind
+	if exKind == "" {
+		exKind = "topic"
+	}
+	if err := ch.ExchangeDeclare(s.Exchange, exKind, true, false, false, false, nil); err != nil {
+		return err
+	}
 	// Main queue (optionally DLX to deadEx)
 	mainArgs := amqp.Table{}
 	if s.Retry != nil && s.Retry.Enabled {
