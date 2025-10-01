@@ -81,7 +81,7 @@ func (r *ChatReceiptV1) validateCommon(ve *ValidationError) {
 	if r.Provider.Provider == "" {
 		ve.add("provider.provider", "required")
 	}
-	if r.Provider.InstanceID == "" {
+	if r.Provider.InstanceID == 0 {
 		ve.add("provider.instance_id", "required")
 	}
 	// Conversation

@@ -1,15 +1,15 @@
 package multichat
 
 type TenantRef struct {
-	CompanyID      int64 `json:"company_id"`
-	CounterpartyID int64 `json:"counterparty_id"`
+	CompanyID      uint64 `json:"company_id"`
+	CounterpartyID uint64 `json:"counterparty_id"`
 }
 type ProviderRef struct {
 	Provider   string `json:"provider"` // "wa.greenapi","telegram",...
-	InstanceID string `json:"instance_id"`
+	InstanceID uint64 `json:"instance_id"`
 }
 type ConversationKey struct {
-	ConversationID int64  `json:"conversation_id"`
+	ConversationID uint64 `json:"conversation_id"`
 	ProviderChatID string `json:"provider_chat_id"`
 }
 type MessageKey struct {
