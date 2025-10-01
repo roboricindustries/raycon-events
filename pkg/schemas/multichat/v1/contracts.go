@@ -19,4 +19,5 @@ type BodyDescriptor struct {
 	HasText     bool     `json:"has_text"`
 	TextPreview string   `json:"text_preview,omitempty"` // ≤512B
 	MediaKinds  []string `json:"media_kinds,omitempty"`  // ["image","audio"]
+	Fingerprint string   `json:"fingerprint,omitempty"`
 }
