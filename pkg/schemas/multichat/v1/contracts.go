@@ -9,8 +9,8 @@ type ProviderRef struct {
 	InstanceID uint64 `json:"instance_id"`
 }
 type ConversationKey struct {
-	ConversationID uint64 `json:"conversation_id"`
-	ProviderChatID string `json:"provider_chat_id"`
+	ConversationID *uint64 `json:"conversation_id"`
+	ProviderChatID string  `json:"provider_chat_id"`
 }
 type MessageKey struct {
 	ProviderMessageID string `json:"provider_message_id"`

@@ -1,7 +1,6 @@
 package multichat
 
 import (
-	"errors"
 	"fmt"
 	"time"
 )
@@ -20,6 +19,12 @@ const (
 type ReceiptError struct {
 	Code    string `json:"code"`              // "401","400","media_unsupported",...
 	Details string `json:"details,omitempty"` // provider/raw reason if safe
+}
+
+type ReceiptRequest struct {
+	Kind               string `json:"kind,omitempty"` // "text"
+	TextPreview        string `json:"text_preview,omitempty"`
+	ContentFingerprint string `json:"content_fingerprint,omitempty"` // sha256 of full content
 }
 
 type ChatReceiptV1 struct {
@@ -47,29 +52,13 @@ type ChatReceiptV1 struct {
 
 	// Optional echo of the request (lightweight; Hub already knows full text)
 	// Useful if you want to show content for accepted quickly without DB hop
-	Request struct {
-		Kind               string `json:"kind,omitempty"` // "text"
-		TextPreview        string `json:"text_preview,omitempty"`
-		ContentFingerprint string `json:"content_fingerprint,omitempty"` // sha256 of full content
-	} `json:"request"`
+	Request ReceiptRequest `json:"request"`
 
 	// Error only for "rejected" or "failed"
 	Error *ReceiptError `json:"error,omitempty"`
 }
 
 // ---------------- Validation ----------------
-
-type ValidationIssue struct{ Field, Reason string }
-
-type ValidationError struct{ Issues []ValidationIssue }
-
-var ErrInvalidContract = errors.New("invalid contract")
-
-func (e *ValidationError) Error() string { return ErrInvalidContract.Error() }
-func (e *ValidationError) add(f, r string) {
-	e.Issues = append(e.Issues, ValidationIssue{Field: f, Reason: r})
-}
-func (e *ValidationError) Is(target error) bool { return target == ErrInvalidContract }
 
 // Basic structural checks shared by all statuses
 func (r *ChatReceiptV1) validateCommon(ve *ValidationError) {
