@@ -15,22 +15,25 @@ const (
 	AttFailed  AttachmentState = "failed"
 )
 
-type AttachmentProviderRef struct {
-	MessageID       string `json:"message_id"`
-	ChatID          string `json:"chat_id"`
-	AttachmentIndex int    `json:"attachment_index"`
+type ProviderMediaRefV1 struct {
+	RefVer           int               `json:"ref_ver"`                  // =1
+	URL              string            `json:"url,omitempty"`            // ephemeral direct link if present
+	URLExpiresAtUnix *int64            `json:"url_expires_at,omitempty"` // optional, if known
+	MediaID          string            `json:"media_id,omitempty"`       // durable provider handle, if any
+	Headers          map[string]string `json:"headers,omitempty"`        // rarely needed; auth
 }
 
 type AttachmentDescriptor struct {
-	ID        string          `json:"id"`    // deterministic: <provider_msg_id>#<idx>
-	Kind      string          `json:"kind"`  // "image","audio","video","document","sticker","location","contact"
-	State     AttachmentState `json:"state"` // always "pending" in the receiver for now
-	Filename  string          `json:"filename,omitempty"`
-	Mime      string          `json:"mime,omitempty"`
-	SizeBytes *int64          `json:"size_bytes,omitempty"`
+	ID              string          `json:"id"`    // deterministic: <provider_msg_id>#<idx>
+	Kind            string          `json:"kind"`  // "image","audio","video","document","sticker","location","contact"
+	State           AttachmentState `json:"state"` // always "pending" in the receiver for now
+	AttachmentIndex int64           `json:"attachment_index"`
+	Filename        string          `json:"filename,omitempty"`
+	Mime            string          `json:"mime,omitempty"`
+	SizeBytes       *int64          `json:"size_bytes,omitempty"`
 	// What the future downloader needs to call provider’s media API:
-	ProviderRef  AttachmentProviderRef `json:"provider_ref"`
-	ProviderMeta map[string]any        `json:"provider_meta,omitempty"` // harmless raw hints (e.g., GA type)
+	ProviderRef  ProviderMediaRefV1 `json:"provider_ref"`
+	ProviderMeta map[string]any     `json:"provider_meta,omitempty"` // harmless raw hints (e.g., GA type)
 }
 
 type ChatInboundV1 struct {
@@ -59,34 +62,38 @@ var allowedMessageKinds = map[string]struct{}{
 
 // ---------------- AttachmentDescriptor helpers ----------------
 
-func (a AttachmentDescriptor) Validate() error {
+func (a AttachmentDescriptor) Validate(providerMsgID string) error {
 	ve := &ValidationError{}
 
-	// Basic ref checks
-	if a.ProviderRef.MessageID == "" {
-		ve.add("provider_ref.message_id", "required")
+	if a.AttachmentIndex < 0 {
+		ve.add("index", "must be >= 0")
 	}
-	if a.ProviderRef.ChatID == "" {
-		ve.add("provider_ref.chat_id", "required")
-	}
-	if a.ProviderRef.AttachmentIndex < 0 {
-		ve.add("provider_ref.attachment_index", "must be >= 0")
-	}
+
 	// Deterministic ID enforcement
-	want := DeterministicAttachmentID(a.ProviderRef.MessageID, a.ProviderRef.AttachmentIndex)
+	want := DeterministicAttachmentID(providerMsgID, a.AttachmentIndex)
 	if a.ID != want {
 		ve.add("id", fmt.Sprintf("must equal %q", want))
 	}
-	// Kind & state
+
 	if _, ok := allowedAttachmentKinds[a.Kind]; !ok {
 		ve.add("kind", fmt.Sprintf("unsupported: %q", a.Kind))
 	}
+
 	switch a.State {
 	case AttPending, AttAvail, AttFailed:
 	default:
 		ve.add("state", fmt.Sprintf("unsupported: %q", a.State))
 	}
-	// Size sanity (optional/nullable)
+
+	// ProviderRef sanity
+	if a.ProviderRef.RefVer != 1 {
+		ve.add("provider_ref.ref_ver", "must be 1")
+	}
+	if a.ProviderRef.URL == "" && a.ProviderRef.MediaID == "" {
+		ve.add("provider_ref", "either url or media_id must be present")
+	}
+
+	// Size sanity
 	if a.SizeBytes != nil && *a.SizeBytes < 0 {
 		ve.add("size_bytes", "must be >= 0")
 	}
@@ -102,7 +109,7 @@ func (a AttachmentDescriptor) Validate() error {
 func (m *ChatInboundV1) Normalize() {
 	// Sort attachments by index for stable ordering
 	sort.Slice(m.Attachments, func(i, j int) bool {
-		return m.Attachments[i].ProviderRef.AttachmentIndex < m.Attachments[j].ProviderRef.AttachmentIndex
+		return m.Attachments[i].AttachmentIndex < m.Attachments[j].AttachmentIndex
 	})
 }
 
@@ -139,17 +146,19 @@ func (m ChatInboundV1) Validate() error {
 
 	// Attachments
 	seenIDs := make(map[string]struct{}, len(m.Attachments))
+	seenIdx := make(map[int64]struct{}, len(m.Attachments))
 	for i, a := range m.Attachments {
-		if a.ProviderRef.MessageID != m.Message.ProviderMessageID {
-			ve.add(fmt.Sprintf("attachments[%d].provider_ref.message_id", i), "must equal message.provider_message_id")
-		}
-		if err := a.Validate(); err != nil {
+		if err := a.Validate(m.Message.ProviderMessageID); err != nil {
 			ve.add(fmt.Sprintf("attachments[%d]", i), err.Error())
 		}
 		if _, dup := seenIDs[a.ID]; dup {
 			ve.add(fmt.Sprintf("attachments[%d].id", i), "duplicate id")
 		}
 		seenIDs[a.ID] = struct{}{}
+		if _, dup := seenIdx[a.AttachmentIndex]; dup {
+			ve.add(fmt.Sprintf("attachments[%d].index", i), "duplicate index")
+		}
+		seenIdx[a.AttachmentIndex] = struct{}{}
 	}
 
 	if len(ve.Issues) > 0 {
@@ -158,7 +167,7 @@ func (m ChatInboundV1) Validate() error {
 	return nil
 }
 
-func DeterministicAttachmentID(providerMsgID string, idx int) string {
+func DeterministicAttachmentID(providerMsgID string, idx int64) string {
 	return fmt.Sprintf("%s#%d", providerMsgID, idx)
 }
 
@@ -192,10 +201,8 @@ func NewInboundMediaStub(
 ) ChatInboundV1 {
 	// Ensure deterministic fields
 	for i := range placeholders {
-		placeholders[i].ID = DeterministicAttachmentID(providerMsgID, placeholders[i].ProviderRef.AttachmentIndex)
+		placeholders[i].ID = DeterministicAttachmentID(providerMsgID, placeholders[i].AttachmentIndex)
 		placeholders[i].State = AttPending
-		placeholders[i].ProviderRef.MessageID = providerMsgID
-		placeholders[i].ProviderRef.ChatID = chatID
 	}
 	msg := ChatInboundV1{
 		Tenant:       t,
