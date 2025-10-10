@@ -26,6 +26,8 @@ type NotificationLogData struct {
 	Channels []string `json:"channels"`
 	// Owner company; null for system/global
 	CompanyID *int64 `json:"company_id"`
+	// Owner counterparty; null for system/global
+	CounterpartyID *int64 `json:"counterparty_id"`
 	// Do not send after this moment
 	ExpiresAt *time.Time `json:"expires_at"`
 	// Extra metadata for analytics/auditing
