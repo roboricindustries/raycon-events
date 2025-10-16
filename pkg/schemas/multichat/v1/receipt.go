@@ -197,6 +197,7 @@ func NewAcceptedReceipt(
 	at time.Time,
 	preview string,
 	fp string,
+	withBody bool,
 ) ChatReceiptV1 {
 	r := ChatReceiptV1{
 		Tenant:       t,
@@ -214,6 +215,15 @@ func NewAcceptedReceipt(
 		r.Request.TextPreview = truncateUTF8ToBytes(preview, 512)
 		r.Request.ContentFingerprint = fp
 	}
+	if withBody {
+		body := BodyDescriptor{
+			HasText:     preview == "",
+			TextPreview: preview,
+			Fingerprint: fp,
+		}
+		r.Body = body
+	}
+
 	return r
 }
 
