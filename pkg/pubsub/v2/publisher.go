@@ -71,19 +71,17 @@ func (c *Client) WithConfirmChan(
 	ctx context.Context,
 	fn func(ch *amqp.Channel, confirms <-chan amqp.Confirmation) error,
 ) error {
-	ch, err := c.pool.Borrow(ctx, c.config.PoolRetryDelayMs)
+	// Use a fresh channel each time so confirms/listeners don't leak.
+	ch, err := c.conn.Channel()
 	if err != nil {
-		return fmt.Errorf("borrow channel: %w", err)
+		return fmt.Errorf("open channel: %w", err)
 	}
+	defer SafeClose(ch) // or just ch.Close()
 
-	defer c.pool.Return(ch)
-
-	// Turn on confirm mode (idempotent on a fresh channel)
 	if err := ch.Confirm(false); err != nil {
 		return fmt.Errorf("confirm mode: %w", err)
 	}
 
-	// Big enough buffer to hold a batch’s confirms; adjust if you batch > 1024 msgs
 	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1024))
 
 	return fn(ch, confirms)
