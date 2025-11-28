@@ -76,15 +76,7 @@ func (c *Client) WithConfirmChan(
 		return fmt.Errorf("borrow channel: %w", err)
 	}
 
-	// If something goes wrong, close the channel (don’t return a poisoned one to the pool)
-	returnToPool := false
-	defer func() {
-		if returnToPool {
-			c.pool.Return(ch)
-		} else {
-			_ = ch.Close()
-		}
-	}()
+	defer c.pool.Return(ch)
 
 	// Turn on confirm mode (idempotent on a fresh channel)
 	if err := ch.Confirm(false); err != nil {
@@ -94,14 +86,7 @@ func (c *Client) WithConfirmChan(
 	// Big enough buffer to hold a batch’s confirms; adjust if you batch > 1024 msgs
 	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1024))
 
-	// Run caller’s logic (publish + wait for confirms)
-	if err := fn(ch, confirms); err != nil {
-		return err
-	}
-
-	// All good — safe to reuse this channel
-	returnToPool = true
-	return nil
+	return fn(ch, confirms)
 }
 
 func (c *Client) RawPublish(ctx context.Context, ch *amqp.Channel, exchange, routingKey string, env common.Envelope) error {
