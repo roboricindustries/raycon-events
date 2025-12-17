@@ -21,3 +21,12 @@ type BodyDescriptor struct {
 	MediaKinds  []string `json:"media_kinds,omitempty"`  // ["image","audio"]
 	Fingerprint string   `json:"fingerprint,omitempty"`
 }
+
+type ActorRef struct {
+	// Principal kind / role in your auth model.
+	// Examples: "manager", "company", "counterparty", "moderator", "admin"
+	Kind string `json:"kind"`
+
+	// ID in that principal table/domain
+	ID uint64 `json:"id"`
+}
