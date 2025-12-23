@@ -1,6 +1,7 @@
 package multichat
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -56,6 +57,12 @@ type ChatReceiptV1 struct {
 
 	// Error only for "rejected" or "failed"
 	Error *ReceiptError `json:"error,omitempty"`
+
+	// Attachments for outbound messages
+	Attachments []OutboundAttachmentDescriptor `json:"attachments,omitempty"`
+
+	// Raw provider metadata
+	ProviderMeta json.RawMessage `json:"provider_meta,omitempty"`
 }
 
 // ---------------- Validation ----------------

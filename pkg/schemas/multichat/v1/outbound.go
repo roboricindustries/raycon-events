@@ -1,6 +1,9 @@
 package multichat
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type ChatOutboundToProcessorV1 struct {
 	Tenant       TenantRef       `json:"tenant"`
@@ -13,4 +16,9 @@ type ChatOutboundToProcessorV1 struct {
 	Text       string    `json:"text"`   // full text to send
 	AtHub      time.Time `json:"at_hub"` // enqueue timestamp
 
+	// Attachments for outbound messages
+	Attachments []OutboundAttachmentDescriptor `json:"attachments,omitempty"`
+
+	// Raw provider metadata
+	ProviderMeta json.RawMessage `json:"provider_meta,omitempty"`
 }
