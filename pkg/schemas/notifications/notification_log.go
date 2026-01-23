@@ -9,6 +9,8 @@ package notifications
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/roboricindustries/raycon-events/pkg/schemas/common"
 )
 
 func UnmarshalNotificationLog(data []byte) (NotificationLogData, error) {
@@ -44,4 +46,6 @@ type NotificationLogData struct {
 	RecipientRole string `json:"recipient_role"`
 	// Do not send before this moment
 	ScheduledAt *time.Time `json:"scheduled_at"`
+	// Targeting for push-gateway
+	Targeting *common.Targeting `json:"targeting,omitempty"`
 }
