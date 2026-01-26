@@ -123,6 +123,7 @@ type ChatMessageEditedObservedV1 struct {
 	Provider     ProviderRef     `json:"provider"`
 	Conversation ConversationKey `json:"conversation"`
 
+	Direction string        `json:"direction"` // inbound|outbound
 	Source MutationSource `json:"source"` // client|phone|echo|api
 
 	// Target is the ORIGINAL message being edited (GreenAPI stanzaId)
@@ -150,6 +151,7 @@ type ChatMessageRemovedObservedV1 struct {
 	Provider     ProviderRef     `json:"provider"`
 	Conversation ConversationKey `json:"conversation"`
 
+	Direction string        `json:"direction"` // inbound|outbound
 	Source MutationSource `json:"source"` // client|phone|echo|api
 
 	// Target is the ORIGINAL message being deleted (GreenAPI stanzaId)
