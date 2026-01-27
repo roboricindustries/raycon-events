@@ -66,6 +66,7 @@ type ChatMutationRequestedV1 struct {
 
 	// Correlation helpers (at least one should be present in practice)
 	MessageID  *uint64     `json:"message_id,omitempty"`  // HUB message_id (optional)
+	Seq        *uint64     `json:"seq,omitempty"`         // per-message mutation seq (required for ordering)
 	OutboundID *string     `json:"outbound_id,omitempty"` // if used in your pipeline
 	Target     *MessageKey `json:"target,omitempty"`      // provider_message_id (stanzaId) if known
 
