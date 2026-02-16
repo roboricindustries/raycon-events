@@ -1,10 +1,16 @@
 // Package chanpool provides a bounded, publisher-only pool of AMQP channels.
 //
-// Contract (publisher-only):
-//   - Borrowers must NOT call Consume/Qos/Tx/Flow or attach long-lived Notify* listeners.
-//   - Borrowers must treat channels as exclusive-use (one goroutine at a time).
-//   - If Publish returns an error (or you suspect channel corruption), call Discard() (or Lease.Discard()).
-//   - Reconnect is intentionally out of scope: swap the whole pool when the connection is replaced.
+// Design goals:
+//   - Publisher-only: borrow channel -> Publish/PublishWithContext -> return/discard.
+//   - Exclusive-use: one goroutine owns a borrowed channel at a time.
+//   - Bounded concurrency: at most N channels can be borrowed concurrently.
+//   - Non-blocking Release/Discard: never creates channels or waits.
+//
+// IMPORTANT CONTRACT (publisher-only):
+//   - Do NOT call Consume/Qos/Tx/Flow on pooled channels.
+//   - Do NOT attach long-lived Notify* listeners (NotifyReturn/NotifyPublish/NotifyClose, etc.).
+//   - If Publish (or any channel operation) returns an error, Discard the channel.
+//   - Reconnect is out of scope: when your connection is replaced, create and swap a new Pool.
 package chanpool
 
 import (
@@ -16,15 +22,21 @@ import (
 	"github.com/rabbitmq/amqp091-go"
 )
 
-var ErrPoolClosed = errors.New("amqp channel pool is closed")
+var (
+	// ErrPoolClosed is returned when operations are attempted on a closed pool.
+	ErrPoolClosed = errors.New("amqp091 channel pool is closed")
+	// ErrConnClosed is returned when the underlying AMQP connection is closed.
+	ErrConnClosed = errors.New("amqp091 connection is closed")
+)
 
 // Option configures the Pool.
 type Option func(*Pool)
 
 // WithWarmup pre-creates up to size channels during New() (fail-fast).
+// If warmup fails, New returns an error and closes any created channels.
 func WithWarmup() Option { return func(p *Pool) { p.warmup = true } }
 
-// WithConfigure runs fn on every newly created channel (warmup + replacements).
+// WithConfigure runs fn on every newly created channel (warmup + later creations).
 // Typical publisher-only use: enable confirm mode, declare exchanges (if you do it here), etc.
 func WithConfigure(fn func(*amqp091.Channel) error) Option {
 	return func(p *Pool) { p.configure = fn }
@@ -39,20 +51,29 @@ func WithValidate(fn func(*amqp091.Channel) bool) Option {
 // Pool is a bounded pool of AMQP channels.
 // It assumes the *amqp091.Connection lifecycle/reconnect logic is handled elsewhere.
 type Pool struct {
-	conn   *amqp091.Connection
-	size   int
-	idle   chan *amqp091.Channel
-	tokens chan struct{} // semaphore: limits checked-out channels to size
+	conn *amqp091.Connection
+	size int
 
+	// idle holds channels not currently borrowed.
+	idle chan *amqp091.Channel
+	// tokens bounds concurrent borrows to size.
+	tokens chan struct{}
+
+	// closeCh is closed exactly once when the pool closes.
 	closeCh   chan struct{}
 	closeOnce sync.Once
+
+	// newChMu serializes channel creation. Cheap and avoids edge-case races
+	// in some client/library failure modes.
+	newChMu sync.Mutex
 
 	warmup    bool
 	configure func(*amqp091.Channel) error
 	validate  func(*amqp091.Channel) bool
 }
 
-// New creates a bounded pool of size channels.
+// New creates a bounded pool of 'size' channels.
+// 'size' must be > 0.
 func New(conn *amqp091.Connection, size int, opts ...Option) (*Pool, error) {
 	if conn == nil {
 		return nil, errors.New("nil connection")
@@ -61,7 +82,7 @@ func New(conn *amqp091.Connection, size int, opts ...Option) (*Pool, error) {
 		return nil, errors.New("size must be > 0")
 	}
 	if conn.IsClosed() {
-		return nil, errors.New("connection is closed")
+		return nil, ErrConnClosed
 	}
 
 	p := &Pool{
@@ -87,7 +108,6 @@ func New(conn *amqp091.Connection, size int, opts ...Option) (*Pool, error) {
 		for i := 0; i < size; i++ {
 			ch, err := p.newChannel()
 			if err != nil {
-				// Best-effort cleanup.
 				for _, c := range created {
 					_ = c.Close()
 				}
@@ -105,6 +125,10 @@ func New(conn *amqp091.Connection, size int, opts ...Option) (*Pool, error) {
 // Acquire returns an exclusive-use channel, bounded by pool size.
 // It respects ctx cancellation/deadlines while waiting for pool capacity.
 func (p *Pool) Acquire(ctx context.Context) (*amqp091.Channel, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	// Fast path: closed?
 	select {
 	case <-p.closeCh:
@@ -135,12 +159,21 @@ func (p *Pool) Acquire(ctx context.Context) (*amqp091.Channel, error) {
 		return nil, ErrPoolClosed
 	default:
 	}
+	if p.conn.IsClosed() {
+		return nil, ErrConnClosed
+	}
 
 	// Get an idle channel if present; otherwise create lazily.
 	var ch *amqp091.Channel
 	select {
 	case ch = <-p.idle:
 	default:
+	}
+
+	// If we pulled a channel but connection is closed, drop it and fail.
+	if ch != nil && p.conn.IsClosed() {
+		_ = ch.Close()
+		return nil, ErrConnClosed
 	}
 
 	// Validate / replace closed channel (or create new if nil).
@@ -162,6 +195,10 @@ func (p *Pool) Acquire(ctx context.Context) (*amqp091.Channel, error) {
 		return nil, ErrPoolClosed
 	default:
 	}
+	if p.conn.IsClosed() {
+		_ = ch.Close()
+		return nil, ErrConnClosed
+	}
 
 	// Success: caller owns token until Release/Discard.
 	returnToken = false
@@ -176,8 +213,9 @@ func (p *Pool) AcquireTimeout(timeout time.Duration) (*amqp091.Channel, error) {
 }
 
 // Release returns the channel to the pool.
+//
 // Publisher-only: it NEVER creates replacement channels (so it never blocks).
-// If the pool is closed or the channel is bad, it closes the channel and drops it.
+// If the pool is closed, connection is closed, or the channel is bad, it closes and drops it.
 func (p *Pool) Release(ch *amqp091.Channel) {
 	defer p.returnToken()
 
@@ -193,15 +231,19 @@ func (p *Pool) Release(ch *amqp091.Channel) {
 	default:
 	}
 
-	// If channel is closed/bad, drop it. Acquire will recreate as needed.
-	if ch.IsClosed() || (p.validate != nil && !p.validate(ch)) {
+	// If connection/channel is closed or validate fails, drop it.
+	if p.conn.IsClosed() || ch.IsClosed() || (p.validate != nil && !p.validate(ch)) {
 		_ = ch.Close()
 		return
 	}
 
-	// Non-blocking put-back; if pool is somehow full, close to avoid leaks/deadlocks.
+	// Non-blocking put-back, with Close/Release race protection:
+	// if pool closes after our earlier check, we close instead of parking it in idle.
 	select {
+	case <-p.closeCh:
+		_ = ch.Close()
 	case p.idle <- ch:
+		// ok
 	default:
 		_ = ch.Close()
 	}
@@ -264,14 +306,27 @@ func (p *Pool) Stats() Stats {
 	}
 }
 
-// Lease is an optional high-value helper that prevents forgotten Release() and
-// makes "discard on error" patterns easy.
+// Lease is a high-value helper that prevents forgotten Release() and makes
+// "discard on error" patterns safe and easy.
+//
+// Typical usage:
+//
+//	lease, err := pool.Lease(ctx)
+//	if err != nil { return err }
+//	defer lease.Release()
+//
+//	if err := lease.Channel().PublishWithContext(...); err != nil {
+//	    lease.Discard()
+//	    return err
+//	}
 type Lease struct {
 	p    *Pool
 	ch   *amqp091.Channel
 	once sync.Once
 }
 
+// Lease borrows a channel and returns a lease.
+// Call Release() or Discard() exactly once (idempotent).
 func (p *Pool) Lease(ctx context.Context) (*Lease, error) {
 	ch, err := p.Acquire(ctx)
 	if err != nil {
@@ -280,6 +335,7 @@ func (p *Pool) Lease(ctx context.Context) (*Lease, error) {
 	return &Lease{p: p, ch: ch}, nil
 }
 
+// Channel returns the borrowed channel.
 func (l *Lease) Channel() *amqp091.Channel { return l.ch }
 
 // Release returns the channel to the pool (idempotent).
@@ -292,15 +348,15 @@ func (l *Lease) Discard() {
 	l.once.Do(func() { l.p.Discard(l.ch) })
 }
 
-// Do is an optional helper: runs fn with a leased channel.
+// Do runs fn with a leased channel.
 // If fn returns error -> Discard; otherwise -> Release.
+// Panics are treated as discard, then re-panicked.
 func (p *Pool) Do(ctx context.Context, fn func(*amqp091.Channel) error) error {
 	l, err := p.Lease(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		// default to discard on panic
 		if r := recover(); r != nil {
 			l.Discard()
 			panic(r)
@@ -314,12 +370,17 @@ func (p *Pool) Do(ctx context.Context, fn func(*amqp091.Channel) error) error {
 	return nil
 }
 
+// newChannel creates a new AMQP channel and applies configuration.
 func (p *Pool) newChannel() (*amqp091.Channel, error) {
+	p.newChMu.Lock()
+	defer p.newChMu.Unlock()
+
 	if p.conn.IsClosed() {
-		return nil, errors.New("connection is closed")
+		return nil, ErrConnClosed
 	}
 	ch, err := p.conn.Channel()
 	if err != nil {
+		// amqp091 library often returns a useful error when conn is half-dead; keep it.
 		return nil, err
 	}
 	if p.configure != nil {
@@ -331,12 +392,11 @@ func (p *Pool) newChannel() (*amqp091.Channel, error) {
 	return ch, nil
 }
 
+// returnToken returns one borrow permit.
+// Non-blocking by design; if the channel is full, it indicates misuse (double-release).
 func (p *Pool) returnToken() {
-	// Normal path: token channel should have room.
 	select {
 	case p.tokens <- struct{}{}:
 	default:
-		// Indicates a bug (e.g., Release/Discard called more times than Acquire).
-		// Intentionally non-blocking and non-panicking.
 	}
 }
