@@ -66,6 +66,7 @@ type ChatMutationRequestedV1 struct {
 
 	// Correlation helpers (at least one should be present in practice)
 	MessageID  *uint64     `json:"message_id,omitempty"`  // HUB message_id (optional)
+	Seq        *uint64     `json:"seq,omitempty"`         // per-message mutation seq (required for ordering)
 	OutboundID *string     `json:"outbound_id,omitempty"` // if used in your pipeline
 	Target     *MessageKey `json:"target,omitempty"`      // provider_message_id (stanzaId) if known
 
@@ -123,6 +124,7 @@ type ChatMessageEditedObservedV1 struct {
 	Provider     ProviderRef     `json:"provider"`
 	Conversation ConversationKey `json:"conversation"`
 
+	Direction string        `json:"direction"` // inbound|outbound
 	Source MutationSource `json:"source"` // client|phone|echo|api
 
 	// Target is the ORIGINAL message being edited (GreenAPI stanzaId)
@@ -150,6 +152,7 @@ type ChatMessageRemovedObservedV1 struct {
 	Provider     ProviderRef     `json:"provider"`
 	Conversation ConversationKey `json:"conversation"`
 
+	Direction string        `json:"direction"` // inbound|outbound
 	Source MutationSource `json:"source"` // client|phone|echo|api
 
 	// Target is the ORIGINAL message being deleted (GreenAPI stanzaId)
