@@ -71,6 +71,22 @@ type ConsumerSpec struct {
 // ErrPoison indicates non-retriable "bad content" (e.g., JSON decode fail).
 var ErrPoison = errors.New("poison message")
 
+func ackAfterSingleRedelivery(logger *slog.Logger, d amqp.Delivery, queue string, reason string) bool {
+	if !d.Redelivered {
+		return false
+	}
+	if logger != nil {
+		logger.Warn(
+			"retry disabled; dropping message after one redelivery to avoid hot loop",
+			slog.String("queue", queue),
+			slog.String("reason", reason),
+			slog.String("message_id", d.MessageId),
+		)
+	}
+	_ = d.Ack(false)
+	return true
+}
+
 // JSONHandler wraps a typed handler and turns JSON decode failure into ErrPoison.
 func JSONHandler[T any](h func(context.Context, T) error) func(context.Context, amqp.Delivery) error {
 	return func(ctx context.Context, d amqp.Delivery) error {
@@ -87,7 +103,16 @@ func (c *Client) RunWithConsumers(ctx context.Context, specs ...ConsumerSpec) er
 	c.consumerSpecs = make(map[string]ConsumerSpec, len(specs))
 
 	for _, s := range specs {
+		if s.Name == "" {
+			return fmt.Errorf("consumer name is required")
+		}
+		if _, exists := c.consumerSpecs[s.Name]; exists {
+			return fmt.Errorf("duplicate consumer name: %s", s.Name)
+		}
 		c.consumerSpecs[s.Name] = s
+	}
+
+	for _, s := range specs {
 		if err := c.startConsumer(ctx, s); err != nil {
 			return fmt.Errorf("start %s: %w", s.Name, err)
 		}
@@ -284,6 +309,9 @@ func (c *Client) startConsumer(ctx context.Context, spec ConsumerSpec) error {
 							if spec.Retry != nil && spec.Retry.Enabled {
 								_ = d.Nack(false, false)
 							} else {
+								if ackAfterSingleRedelivery(logger, d, spec.Queue, "poison-final-publish-failed") {
+									continue
+								}
 								_ = d.Nack(false, true)
 							}
 							continue // <- DO NOT return
@@ -297,6 +325,9 @@ func (c *Client) startConsumer(ctx context.Context, spec ConsumerSpec) error {
 					if spec.Retry != nil && spec.Retry.Enabled {
 						_ = d.Nack(false, false) // to DLX
 					} else {
+						if ackAfterSingleRedelivery(logger, d, spec.Queue, "retry-disabled-handler-error") {
+							continue
+						}
 						_ = d.Nack(false, true) // immediate requeue (legacy)
 					}
 					continue
@@ -346,7 +377,10 @@ func (c *Client) declareConsumerTopology(ch *amqp.Channel, s ConsumerSpec) error
 		if err := ch.ExchangeDeclare(deadEx, "fanout", true, false, false, false, nil); err != nil {
 			return err
 		}
-		ttl := int32(s.Retry.TTL / time.Millisecond)
+		ttl, err := ttlMillis(s.Retry.TTL)
+		if err != nil {
+			return fmt.Errorf("invalid retry ttl for queue %q: %w", s.Queue, err)
+		}
 		dArgs := amqp.Table{
 			"x-message-ttl":             ttl,
 			"x-dead-letter-exchange":    s.Exchange,

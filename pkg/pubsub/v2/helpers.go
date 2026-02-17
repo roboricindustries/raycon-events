@@ -2,6 +2,8 @@ package pubsub
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"math/rand"
 	"time"
 
@@ -70,6 +72,17 @@ func DeathCount(d amqp.Delivery, queue string) int {
 		}
 	}
 	return 0
+}
+
+func ttlMillis(ttl time.Duration) (int32, error) {
+	ms := ttl / time.Millisecond
+	if ms < 0 {
+		return 0, fmt.Errorf("ttl must be >= 0, got %s", ttl)
+	}
+	if ms > math.MaxInt32 {
+		return 0, fmt.Errorf("ttl is too large: %s", ttl)
+	}
+	return int32(ms), nil
 }
 
 // PublishFinalWithContext publishes a copy of a delivery to a final (fanout) exchange.

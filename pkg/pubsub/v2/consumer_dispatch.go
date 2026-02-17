@@ -110,6 +110,9 @@ func (c *Client) dispatchConsumeLoop(
 					if spec.Retry != nil && spec.Retry.Enabled {
 						_ = d.Nack(false, false)
 					} else {
+						if ackAfterSingleRedelivery(logger, d, spec.Queue, "poison-final-publish-failed") {
+							return
+						}
 						_ = d.Nack(false, true)
 					}
 					return
@@ -122,6 +125,9 @@ func (c *Client) dispatchConsumeLoop(
 			if spec.Retry != nil && spec.Retry.Enabled {
 				_ = d.Nack(false, false) // to DLX
 			} else {
+				if ackAfterSingleRedelivery(logger, d, spec.Queue, "retry-disabled-handler-error") {
+					return
+				}
 				_ = d.Nack(false, true) // requeue
 			}
 			return
