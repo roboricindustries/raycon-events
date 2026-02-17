@@ -27,6 +27,27 @@ type RetrySpec struct {
 	FinalQueue    string
 }
 
+// DispatchSpec enables keyed-lane dispatch for a consumer:
+// ordered processing within a key, concurrent processing across keys.
+//
+// Non-breaking: if Dispatch is nil or Lanes <= 1, consumers run in legacy synchronous mode.
+type DispatchSpec struct {
+	// Lanes is the number of processing lanes (shards). Must be >= 2 to enable dispatch.
+	Lanes int
+
+	// MaxInFlight bounds the number of deliveries that are "in processing" (queued to lanes or executing handler)
+	// and therefore unacked. If <= 0, defaults to the effective Prefetch.
+	MaxInFlight int
+
+	// LaneQueueSize bounds the buffered queue per lane.
+	// If <= 0, a safe default derived from MaxInFlight/Lanes is used.
+	LaneQueueSize int
+
+	// KeyFunc extracts a deterministic key used for lane selection.
+	// All deliveries with the same key are processed sequentially in the same lane.
+	KeyFunc func(d amqp.Delivery) (string, error)
+}
+
 // ConsumerSpec defines a single consumer.
 type ConsumerSpec struct {
 	Name         string
@@ -40,6 +61,8 @@ type ConsumerSpec struct {
 	// If true, poison messages are published to final DLQ then Acked.
 	// If false, poison messages are just Acked (no copy kept).
 	PoisonToFinal bool
+
+	Dispatch *DispatchSpec // nil => current synchronous behavior
 
 	Consume func(ctx context.Context, d amqp.Delivery) error
 }
@@ -158,6 +181,13 @@ func (c *Client) startConsumer(ctx context.Context, spec ConsumerSpec) error {
 	c.consumerWG.Add(1)
 	go func() {
 		defer c.consumerWG.Done()
+
+		// Optional keyed-lane dispatch mode (non-breaking): enabled only when configured.
+		if spec.Dispatch != nil && spec.Dispatch.Lanes > 1 && spec.Dispatch.KeyFunc != nil {
+			c.dispatchConsumeLoop(ctx, ch, spec, pf, msgs, closeCh)
+			return
+		}
+
 		for {
 			select {
 			case <-ctx.Done():
