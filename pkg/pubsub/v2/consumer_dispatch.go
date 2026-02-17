@@ -11,6 +11,8 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+const finalExtra = 3
+
 type consumeResult struct {
 	d   amqp.Delivery
 	err error
@@ -28,6 +30,8 @@ func (c *Client) dispatchConsumeLoop(
 	pf int,
 	msgs <-chan amqp.Delivery,
 	closeCh <-chan *amqp.Error,
+	gen uint64,
+	logger *slog.Logger,
 ) {
 	ds := spec.Dispatch
 	if ds == nil || ds.Lanes <= 1 || ds.KeyFunc == nil {
@@ -77,10 +81,15 @@ func (c *Client) dispatchConsumeLoop(
 					if !ok {
 						return
 					}
-					err := spec.Consume(dctx, d)
+					err := safeConsume(dctx, spec, d, logger)
 					select {
 					case results <- consumeResult{d: d, err: err}:
 					case <-dctx.Done():
+						// best-effort, don't block (prevents goroutine leak on closeCh path)
+						select {
+						case results <- consumeResult{d: d, err: err}:
+						default:
+						}
 						return
 					}
 				}
@@ -88,19 +97,23 @@ func (c *Client) dispatchConsumeLoop(
 		}(laneChans[i])
 	}
 
-	notifyClosed := func() {
-		select {
-		case c.consumerClosed <- spec.Name:
-		default:
-		}
-	}
-
 	finalize := func(d amqp.Delivery, err error) {
 		switch {
 		case errors.Is(err, ErrPoison):
 			if spec.PoisonToFinal {
 				finalEx := FirstNonEmpty(TryFinalEx(spec), spec.Queue+".final")
-				_ = PublishFinal(ch, finalEx, d)
+				if err := PublishFinal(ch, finalEx, d); err != nil {
+					if logger != nil {
+						logger.Error("publish final failed for poison; requeueing",
+							slog.Any("error", err), slog.String("queue", spec.Queue))
+					}
+					if spec.Retry != nil && spec.Retry.Enabled {
+						_ = d.Nack(false, false)
+					} else {
+						_ = d.Nack(false, true)
+					}
+					return
+				}
 			}
 			_ = d.Ack(false)
 			return
@@ -118,8 +131,8 @@ func (c *Client) dispatchConsumeLoop(
 		}
 	}
 
-	if c.logger != nil {
-		c.logger.Info(
+	if logger != nil {
+		logger.Info(
 			"consumer dispatch enabled",
 			slog.String("name", spec.Name),
 			slog.String("queue", spec.Queue),
@@ -127,6 +140,7 @@ func (c *Client) dispatchConsumeLoop(
 			slog.Int("prefetch", pf),
 			slog.Int("max_in_flight", maxInFlight),
 			slog.Int("lane_queue", laneQ),
+			slog.Uint64("gen", gen),
 		)
 	}
 
@@ -153,6 +167,20 @@ func (c *Client) dispatchConsumeLoop(
 	inUse := 0
 
 	for {
+		// Drain completed results first to reduce ACK latency under load.
+		for {
+			select {
+			case res := <-results:
+				if inUse > 0 {
+					inUse--
+				}
+				finalize(res.d, res.err)
+			default:
+				goto drained
+			}
+		}
+	drained:
+
 		// Only read new deliveries when we have capacity.
 		var msgCh <-chan amqp.Delivery
 		if inUse < maxInFlight {
@@ -161,8 +189,24 @@ func (c *Client) dispatchConsumeLoop(
 
 		select {
 		case <-ctx.Done():
-			// Shutdown: no restart.
-			stopWorkers(0)
+			// Graceful shutdown: stop lanes and finalize anything already processed.
+			cancel() // stop workers from reading more
+			for i := 0; i < lanes; i++ {
+				close(laneChans[i])
+			}
+
+			// Close results only after workers exit (no more senders).
+			go func() {
+				wg.Wait()
+				close(results)
+			}()
+
+			// Drain completed results and finalize (Ack/Nack) them.
+			for res := range results {
+				inUse--
+				finalize(res.d, res.err)
+			}
+
 			_ = ch.Close()
 			return
 
@@ -170,12 +214,14 @@ func (c *Client) dispatchConsumeLoop(
 			// Channel closing: schedule restart.
 			stopWorkers(2 * time.Second)
 			drainMsgsRequeue(msgs)
-			notifyClosed()
+			c.notifyConsumerClosed(ctx, spec.Name, gen)
 			_ = ch.Close()
 			return
 
 		case res := <-results:
-			inUse--
+			if inUse > 0 {
+				inUse--
+			}
 			finalize(res.d, res.err)
 
 		case d, ok := <-msgCh:
@@ -190,8 +236,36 @@ func (c *Client) dispatchConsumeLoop(
 
 			// Max-attempts check before dispatch.
 			if spec.Retry != nil && spec.Retry.Enabled && spec.Retry.MaxAttempts > 0 {
-				if DeathCount(d, spec.Queue) >= spec.Retry.MaxAttempts {
-					_ = PublishFinal(ch, FirstNonEmpty(spec.Retry.FinalExchange, spec.Queue+".final"), d)
+				dc := DeathCount(d, spec.Queue)
+				if dc >= spec.Retry.MaxAttempts {
+					finalEx := FirstNonEmpty(spec.Retry.FinalExchange, spec.Queue+".final")
+
+					if err := PublishFinal(ch, finalEx, d); err != nil {
+
+						if dc >= spec.Retry.MaxAttempts+finalExtra {
+							if logger != nil {
+								logger.Error("final publish keeps failing; dropping message to avoid infinite loop",
+									slog.Any("error", err),
+									slog.Int("death_count", dc),
+									slog.String("queue", spec.Queue),
+								)
+							}
+							_ = d.Ack(false)
+
+							inUse--
+							continue
+						} else {
+							if logger != nil {
+								logger.Error("publish final failed; sending back to retry (DLX)",
+									slog.Any("error", err),
+									slog.String("queue", spec.Queue))
+							}
+							_ = d.Nack(false, false)
+							inUse--
+							continue
+						}
+					}
+
 					_ = d.Ack(false)
 					inUse--
 					continue
@@ -200,8 +274,8 @@ func (c *Client) dispatchConsumeLoop(
 
 			key, kerr := ds.KeyFunc(d)
 			if kerr != nil {
-				if c.logger != nil {
-					c.logger.Warn("dispatch key extraction failed", slog.String("name", spec.Name), slog.Any("error", kerr))
+				if logger != nil {
+					logger.Warn("dispatch key extraction failed", slog.String("name", spec.Name), slog.Any("error", kerr))
 				}
 				finalize(d, ErrPoison)
 				inUse--
@@ -214,10 +288,12 @@ func (c *Client) dispatchConsumeLoop(
 			enqueued := false
 			for !enqueued {
 				select {
-
 				case res := <-results:
-					inUse--
+					if inUse > 0 {
+						inUse--
+					}
 					finalize(res.d, res.err)
+
 				case laneChans[idx] <- d:
 					enqueued = true
 
@@ -231,12 +307,11 @@ func (c *Client) dispatchConsumeLoop(
 					inUse--
 					stopWorkers(0)
 					drainMsgsRequeue(msgs)
-					notifyClosed()
+					c.notifyConsumerClosed(ctx, spec.Name, gen)
 					_ = ch.Close()
 					return
 				}
 			}
-			// continue
 		}
 	}
 }

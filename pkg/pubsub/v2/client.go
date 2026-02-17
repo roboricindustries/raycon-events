@@ -9,20 +9,28 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/roboricindustries/raycon-events/pkg/pubsub/v2/chanpool"
 )
 
 // -----------------------------------------------------------------------------
 // Client
 // -----------------------------------------------------------------------------
 
+type consumerClosedEvent struct {
+	name string
+	gen  uint64
+}
+
 type Client struct {
+	mu     sync.RWMutex
 	conn   *amqp.Connection
-	pool   *ChannelPool
+	pool   *chanpool.Pool // publisher-only pool
+	gen    uint64         // connection generation, guarded by mu
 	config RabbitMQConfig
 	logger *slog.Logger
 
 	consumerWG     sync.WaitGroup
-	consumerClosed chan string
+	consumerClosed chan consumerClosedEvent
 	consumerSpecs  map[string]ConsumerSpec
 }
 
@@ -70,19 +78,21 @@ func NewClient(ctx context.Context, config RabbitMQConfig, logger *slog.Logger) 
 		return nil, fmt.Errorf("failed to connect to RabbitMQ: %w", err)
 	}
 
-	// Declare exchanges once on a throwaway channel
-	tempCh, err := conn.Channel()
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("open channel: %w", err)
-	}
 	client := &Client{
 		conn:   conn,
+		gen:    1,
 		config: config,
 		logger: logger,
 	}
+
+	// Declare exchanges once on a throwaway channel
+	tempCh, err := conn.Channel()
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("open channel: %w", err)
+	}
 	if err := client.setupExchanges(tempCh); err != nil {
-		tempCh.Close()
+		_ = tempCh.Close()
 		client.Close()
 		return nil, err
 	}
@@ -93,7 +103,7 @@ func NewClient(ctx context.Context, config RabbitMQConfig, logger *slog.Logger) 
 	if size <= 0 {
 		size = 16
 	}
-	pool, err := NewChannelPool(conn, size)
+	pool, err := chanpool.New(conn, size)
 	if err != nil {
 		client.Close()
 		return nil, fmt.Errorf("create channel pool: %w", err)
@@ -134,8 +144,58 @@ func (c *Client) setupExchanges(ch *amqp.Channel) error {
 	return nil
 }
 
+func (c *Client) snapshot() (conn *amqp.Connection, pool *chanpool.Pool, gen uint64, logger *slog.Logger) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.conn, c.pool, c.gen, c.logger
+}
+
+func (c *Client) currentGen() uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.gen
+}
+
+func (c *Client) notifyConsumerClosed(ctx context.Context, name string, gen uint64) {
+	ev := consumerClosedEvent{name: name, gen: gen}
+
+	// Avoid deadlock when RunWithConsumers is busy reconnecting.
+	t := time.NewTimer(5 * time.Second)
+	defer t.Stop()
+
+	select {
+	case c.consumerClosed <- ev:
+	case <-ctx.Done():
+		if c.logger != nil {
+			c.logger.Warn("consumer-closed notify canceled", slog.String("name", name))
+		}
+	case <-t.C:
+		if c.logger != nil {
+			c.logger.Error("consumer-closed notify timed out (buffer full)", slog.String("name", name))
+		}
+	}
+}
+
 // Close stops consumers, closes pool and connection.
 func (c *Client) Close() {
+	// Force consumers to stop by closing the connection (best-effort).
+	// We swap pointers under lock first to avoid racing with reconnect.
+	c.mu.Lock()
+	conn := c.conn
+	pool := c.pool
+	c.conn = nil
+	c.pool = nil
+	c.gen++
+	c.mu.Unlock()
+
+	if pool != nil {
+		pool.Close()
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+
+	// Wait briefly for consumer goroutines to exit.
 	done := make(chan struct{})
 	go func() {
 		c.consumerWG.Wait()
@@ -144,11 +204,5 @@ func (c *Client) Close() {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-	}
-	if c.pool != nil {
-		c.pool.Close()
-	}
-	if c.conn != nil {
-		_ = c.conn.Close()
 	}
 }

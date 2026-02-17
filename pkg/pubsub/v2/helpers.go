@@ -72,8 +72,9 @@ func DeathCount(d amqp.Delivery, queue string) int {
 	return 0
 }
 
-func PublishFinal(ch *amqp.Channel, exchange string, d amqp.Delivery) error {
-	return ch.PublishWithContext(context.Background(), exchange, "", false, false, amqp.Publishing{
+// PublishFinalWithContext publishes a copy of a delivery to a final (fanout) exchange.
+func PublishFinalWithContext(ctx context.Context, ch *amqp.Channel, exchange string, d amqp.Delivery) error {
+	return ch.PublishWithContext(ctx, exchange, "", false, false, amqp.Publishing{
 		ContentType:   FirstNonEmpty(d.ContentType, "application/json"),
 		Body:          d.Body,
 		Headers:       d.Headers,
@@ -84,6 +85,14 @@ func PublishFinal(ch *amqp.Channel, exchange string, d amqp.Delivery) error {
 		Type:          d.Type,
 		AppId:         d.AppId,
 	})
+}
+
+// PublishFinal is a compatibility wrapper that uses a bounded timeout.
+// This prevents the ACK manager goroutine from hanging indefinitely during broker issues.
+func PublishFinal(ch *amqp.Channel, exchange string, d amqp.Delivery) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return PublishFinalWithContext(ctx, ch, exchange, d)
 }
 
 func SafeClose(ch *amqp.Channel) error {

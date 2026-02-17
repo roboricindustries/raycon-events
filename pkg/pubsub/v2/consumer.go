@@ -9,6 +9,7 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/roboricindustries/raycon-events/pkg/pubsub/v2/chanpool"
 )
 
 // -----------------------------------------------------------------------------
@@ -62,7 +63,7 @@ type ConsumerSpec struct {
 	// If false, poison messages are just Acked (no copy kept).
 	PoisonToFinal bool
 
-	Dispatch *DispatchSpec // nil => current synchronous behavior
+	Dispatch *DispatchSpec // nil => legacy synchronous behavior
 
 	Consume func(ctx context.Context, d amqp.Delivery) error
 }
@@ -82,7 +83,7 @@ func JSONHandler[T any](h func(context.Context, T) error) func(context.Context, 
 }
 
 func (c *Client) RunWithConsumers(ctx context.Context, specs ...ConsumerSpec) error {
-	c.consumerClosed = make(chan string, len(specs)*2)
+	c.consumerClosed = make(chan consumerClosedEvent, len(specs)*4)
 	c.consumerSpecs = make(map[string]ConsumerSpec, len(specs))
 
 	for _, s := range specs {
@@ -92,7 +93,12 @@ func (c *Client) RunWithConsumers(ctx context.Context, specs ...ConsumerSpec) er
 		}
 	}
 
-	errCh := c.conn.NotifyClose(make(chan *amqp.Error, 1))
+	conn, _, _, _ := c.snapshot()
+	if conn == nil {
+		return fmt.Errorf("nil connection")
+	}
+	errCh := conn.NotifyClose(make(chan *amqp.Error, 1))
+
 	base := Dsec(c.config.ReconnectBackoffBaseSeconds, 1)
 	capd := Dsec(c.config.ReconnectBackoffCapSeconds, 30)
 
@@ -101,10 +107,16 @@ func (c *Client) RunWithConsumers(ctx context.Context, specs ...ConsumerSpec) er
 		case <-ctx.Done():
 			return ctx.Err()
 
-		case name := <-c.consumerClosed:
-			if s, ok := c.consumerSpecs[name]; ok {
-				if err := c.startConsumer(ctx, s); err != nil && c.logger != nil {
-					c.logger.Error("restart consumer failed", slog.String("name", name), slog.Any("error", err))
+		case ev := <-c.consumerClosed:
+			// Ignore stale events from older connections.
+			if ev.gen != c.currentGen() {
+				continue
+			}
+			if s, ok := c.consumerSpecs[ev.name]; ok {
+				if err := c.startConsumer(ctx, s); err != nil {
+					if c.logger != nil {
+						c.logger.Error("restart consumer failed", slog.String("name", ev.name), slog.Any("error", err))
+					}
 				}
 			}
 
@@ -115,6 +127,7 @@ func (c *Client) RunWithConsumers(ctx context.Context, specs ...ConsumerSpec) er
 			if c.logger != nil {
 				c.logger.Error("amqp connection closed, reconnecting", slog.Any("error", err))
 			}
+
 			// reconnect loop
 			backoff := base
 			for {
@@ -126,7 +139,13 @@ func (c *Client) RunWithConsumers(ctx context.Context, specs ...ConsumerSpec) er
 					if c.logger != nil {
 						c.logger.Error("reconnect failed", slog.Any("error", rerr), slog.Duration("retry_in", wait))
 					}
-					time.Sleep(wait)
+					t := time.NewTimer(wait)
+					select {
+					case <-ctx.Done():
+						t.Stop()
+						return ctx.Err()
+					case <-t.C:
+					}
 					if backoff*2 < capd {
 						backoff *= 2
 					}
@@ -135,11 +154,18 @@ func (c *Client) RunWithConsumers(ctx context.Context, specs ...ConsumerSpec) er
 
 				// success → restart all consumers on new conn
 				for _, s := range c.consumerSpecs {
-					if err := c.startConsumer(ctx, s); err != nil && c.logger != nil {
-						c.logger.Error("restart consumer after reconnect failed", slog.String("name", s.Name), slog.Any("error", err))
+					if err := c.startConsumer(ctx, s); err != nil {
+						if c.logger != nil {
+							c.logger.Error("restart consumer after reconnect failed", slog.String("name", s.Name), slog.Any("error", err))
+						}
 					}
 				}
-				errCh = c.conn.NotifyClose(make(chan *amqp.Error, 1))
+
+				conn, _, _, _ := c.snapshot()
+				if conn == nil {
+					return fmt.Errorf("nil connection after reconnect")
+				}
+				errCh = conn.NotifyClose(make(chan *amqp.Error, 1))
 				break
 			}
 		}
@@ -148,7 +174,12 @@ func (c *Client) RunWithConsumers(ctx context.Context, specs ...ConsumerSpec) er
 
 // startConsumer declares the per-consumer topology and runs the loop.
 func (c *Client) startConsumer(ctx context.Context, spec ConsumerSpec) error {
-	ch, err := c.conn.Channel()
+	conn, _, gen, logger := c.snapshot()
+	if conn == nil {
+		return fmt.Errorf("nil connection")
+	}
+
+	ch, err := conn.Channel()
 	if err != nil {
 		return err
 	}
@@ -184,7 +215,7 @@ func (c *Client) startConsumer(ctx context.Context, spec ConsumerSpec) error {
 
 		// Optional keyed-lane dispatch mode (non-breaking): enabled only when configured.
 		if spec.Dispatch != nil && spec.Dispatch.Lanes > 1 && spec.Dispatch.KeyFunc != nil {
-			c.dispatchConsumeLoop(ctx, ch, spec, pf, msgs, closeCh)
+			c.dispatchConsumeLoop(ctx, ch, spec, pf, msgs, closeCh, gen, logger)
 			return
 		}
 
@@ -208,10 +239,7 @@ func (c *Client) startConsumer(ctx context.Context, spec ConsumerSpec) error {
 					}
 				}
 			drained:
-				select {
-				case c.consumerClosed <- spec.Name:
-				default:
-				}
+				c.notifyConsumerClosed(ctx, spec.Name, gen)
 				_ = ch.Close()
 				return
 
@@ -224,19 +252,42 @@ func (c *Client) startConsumer(ctx context.Context, spec ConsumerSpec) error {
 				// Check max attempts for main queue (if retry enabled)
 				if spec.Retry != nil && spec.Retry.Enabled && spec.Retry.MaxAttempts > 0 {
 					if DeathCount(d, spec.Queue) >= spec.Retry.MaxAttempts {
-						_ = PublishFinal(ch, FirstNonEmpty(spec.Retry.FinalExchange, spec.Queue+".final"), d)
+						finalEx := FirstNonEmpty(spec.Retry.FinalExchange, spec.Queue+".final")
+
+						if err := PublishFinal(ch, finalEx, d); err != nil {
+							if logger != nil {
+								logger.Error("publish final failed; sending back to retry (DLX)",
+									slog.Any("error", err),
+									slog.String("queue", spec.Queue))
+							}
+							// Use DLX backoff instead of immediate requeue.
+							_ = d.Nack(false, false)
+							continue
+						}
+
 						_ = d.Ack(false)
 						continue
 					}
 				}
 
-				err := spec.Consume(ctx, d)
+				err := safeConsume(ctx, spec, d, logger)
 				switch {
 				case errors.Is(err, ErrPoison):
-					// Poison policy
 					if spec.PoisonToFinal {
 						finalEx := FirstNonEmpty(TryFinalEx(spec), spec.Queue+".final")
-						_ = PublishFinal(ch, finalEx, d)
+						if err := PublishFinal(ch, finalEx, d); err != nil {
+							if logger != nil {
+								logger.Error("publish final failed for poison; requeueing",
+									slog.Any("error", err), slog.String("queue", spec.Queue))
+							}
+							// If retry enabled, prefer DLX (backoff); else requeue once.
+							if spec.Retry != nil && spec.Retry.Enabled {
+								_ = d.Nack(false, false)
+							} else {
+								_ = d.Nack(false, true)
+							}
+							continue // <- DO NOT return
+						}
 					}
 					_ = d.Ack(false)
 					continue
@@ -257,8 +308,8 @@ func (c *Client) startConsumer(ctx context.Context, spec ConsumerSpec) error {
 		}
 	}()
 
-	if c.logger != nil {
-		c.logger.Info("consumer started", slog.String("name", spec.Name), slog.String("queue", spec.Queue), slog.Int("prefetch", pf))
+	if logger != nil {
+		logger.Info("consumer started", slog.String("name", spec.Name), slog.String("queue", spec.Queue), slog.Int("prefetch", pf))
 	}
 	return nil
 }
@@ -328,15 +379,10 @@ func (c *Client) declareConsumerTopology(ch *amqp.Channel, s ConsumerSpec) error
 }
 
 // Reconnect the whole stack and re-declare exchanges.
+//
+// Concurrency note: conn/pool swaps are guarded; old instances are closed after the swap.
 func (c *Client) reconnect(ctx context.Context) error {
 	const op = "rabbitmq.reconnect"
-
-	if c.pool != nil {
-		c.pool.Close()
-	}
-	if c.conn != nil && !c.conn.IsClosed() {
-		_ = c.conn.Close()
-	}
 
 	dial := c.config.Dialer
 	if dial == nil {
@@ -349,30 +395,45 @@ func (c *Client) reconnect(ctx context.Context) error {
 
 	tempCh, err := conn.Channel()
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("open channel: %w", err)
 	}
 	if err := c.setupExchanges(tempCh); err != nil {
-		tempCh.Close()
-		conn.Close()
+		_ = tempCh.Close()
+		_ = conn.Close()
 		return fmt.Errorf("declare exchanges: %w", err)
 	}
-	tempCh.Close()
+	_ = tempCh.Close()
 
 	size := c.config.PublishPoolSize
 	if size <= 0 {
 		size = 16
 	}
-	pool, err := NewChannelPool(conn, size)
+	pool, err := chanpool.New(conn, size)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("new pool: %w", err)
 	}
 
+	// Swap under lock, then close old.
+	c.mu.Lock()
+	oldConn := c.conn
+	oldPool := c.pool
 	c.conn = conn
 	c.pool = pool
+	c.gen++
+	newGen := c.gen
+	c.mu.Unlock()
+
+	if oldPool != nil {
+		oldPool.Close()
+	}
+	if oldConn != nil && !oldConn.IsClosed() {
+		_ = oldConn.Close()
+	}
+
 	if c.logger != nil {
-		c.logger.With("op", op).Info("reconnected")
+		c.logger.With("op", op).Info("reconnected", slog.Uint64("gen", newGen))
 	}
 	return nil
 }

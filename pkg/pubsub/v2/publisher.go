@@ -35,13 +35,19 @@ func (c *Client) PublishJSON(ctx context.Context, exchange, routingKey string, e
 		return fmt.Errorf("marshal envelope: %w", err)
 	}
 
-	ch, err := c.pool.Borrow(ctx, c.config.PoolRetryDelayMs)
+	_, pool, _, _ := c.snapshot()
+	if pool == nil {
+		return fmt.Errorf("publisher pool is not initialized")
+	}
+
+	leaseCh, err := pool.Lease(ctx)
 	if err != nil {
+
 		return fmt.Errorf("borrow channel: %w", err)
 	}
-	defer c.pool.Return(ch)
+	defer leaseCh.Release()
 
-	return ch.PublishWithContext(ctx, exchange, routingKey, false, false, amqp.Publishing{
+	pubErr := leaseCh.Channel().PublishWithContext(ctx, exchange, routingKey, false, false, amqp.Publishing{
 		ContentType:   "application/json",
 		Body:          body,
 		DeliveryMode:  amqp.Persistent,
@@ -49,34 +55,36 @@ func (c *Client) PublishJSON(ctx context.Context, exchange, routingKey string, e
 		CorrelationId: env.Meta.CorrelationID,
 		Type:          env.Meta.Type,
 		Timestamp:     env.Meta.Time,
-		AppId:         FirstNonEmpty(c.config.Queues["producer"], ""), // or c.config.DefaultProducer
+		AppId:         FirstNonEmpty(c.config.Queues["producer"], ""),
 	})
+	if pubErr != nil {
+		leaseCh.Discard()
+		return pubErr
+	}
+	return nil
 }
 
+// NotifyChan provides a confirm-enabled channel to the callback.
+// IMPORTANT: this uses a fresh channel (NOT the publisher pool) to avoid leaking NotifyPublish listeners.
 func (c *Client) NotifyChan(ctx context.Context, withChan func(ch *amqp.Channel, confirms <-chan amqp.Confirmation) error) error {
-	ch, err := c.pool.Borrow(ctx, c.config.PoolRetryDelayMs)
-	if err != nil {
-		return fmt.Errorf("borrow channel: %w", err)
-	}
-	defer c.pool.Return(ch)
-	if err := ch.Confirm(false); err != nil {
-		return err
-	}
-	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
-	err = withChan(ch, confirms)
-	return err
+	return c.WithConfirmChan(ctx, withChan)
 }
 
 func (c *Client) WithConfirmChan(
 	ctx context.Context,
 	fn func(ch *amqp.Channel, confirms <-chan amqp.Confirmation) error,
 ) error {
+	conn, _, _, _ := c.snapshot()
+	if conn == nil {
+		return fmt.Errorf("nil connection")
+	}
+
 	// Use a fresh channel each time so confirms/listeners don't leak.
-	ch, err := c.conn.Channel()
+	ch, err := conn.Channel()
 	if err != nil {
 		return fmt.Errorf("open channel: %w", err)
 	}
-	defer SafeClose(ch) // or just ch.Close()
+	defer SafeClose(ch)
 
 	if err := ch.Confirm(false); err != nil {
 		return fmt.Errorf("confirm mode: %w", err)
@@ -117,6 +125,6 @@ func (c *Client) RawPublish(ctx context.Context, ch *amqp.Channel, exchange, rou
 		CorrelationId: env.Meta.CorrelationID,
 		Type:          env.Meta.Type,
 		Timestamp:     env.Meta.Time,
-		AppId:         FirstNonEmpty(c.config.Queues["producer"], ""), // or c.config.DefaultProducer
+		AppId:         FirstNonEmpty(c.config.Queues["producer"], ""),
 	})
 }
