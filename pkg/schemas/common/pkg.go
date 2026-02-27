@@ -1,0 +1,17 @@
+package common
+
+type TenantRef struct {
+	CompanyID      uint64 `json:"company_id"`
+	CounterpartyID uint64 `json:"counterparty_id"`
+}
+type ProviderRef struct {
+	Provider   string `json:"provider"` // "wa.greenapi","telegram",...
+	InstanceID uint64 `json:"instance_id"`
+}
+type ConversationKey struct {
+	ConversationID *uint64 `json:"conversation_id"`
+	ProviderChatID string  `json:"provider_chat_id"`
+}
+type MessageKey struct {
+	ProviderMessageID string `json:"provider_message_id"`
+}
