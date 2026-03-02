@@ -34,6 +34,9 @@ type BotOutboundV1 struct {
 	OutboundID               string `json:"outbound_id"`
 	Kind                     string `json:"kind"`
 	Text                     string `json:"text"`
+
+	DependsOnOutboundID *string `json:"depends_on_outbound_id,omitempty"`
+	DeliveryClass       *string `json:"delivery_class,omitempty"`
 }
 
 func (m BotInboundV1) MessageText() string {
