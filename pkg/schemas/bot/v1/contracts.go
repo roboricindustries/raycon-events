@@ -71,3 +71,43 @@ func (m BotInboundV1) Validate() error {
 	}
 	return nil
 }
+
+func (m BotOutboundV1) Validate() error {
+	if m.Tenant.CompanyID == 0 {
+		return fmt.Errorf("tenant.company_id is required")
+	}
+	if m.Tenant.CounterpartyID == 0 {
+		return fmt.Errorf("tenant.counterparty_id is required")
+	}
+	if strings.TrimSpace(m.Provider.Provider) == "" {
+		return fmt.Errorf("provider.provider is required")
+	}
+	if m.Provider.InstanceID == 0 {
+		return fmt.Errorf("provider.instance_id is required")
+	}
+	if m.ClientID == 0 {
+		return fmt.Errorf("client_id is required")
+	}
+	if strings.TrimSpace(m.Conversation.ProviderChatID) == "" {
+		return fmt.Errorf("conversation.provider_chat_id is required")
+	}
+	if strings.TrimSpace(m.InboundProviderMessageID) == "" {
+		return fmt.Errorf("inbound_provider_message_id is required")
+	}
+	if strings.TrimSpace(m.OutboundID) == "" {
+		return fmt.Errorf("outbound_id is required")
+	}
+	if strings.TrimSpace(m.Kind) == "" {
+		return fmt.Errorf("kind is required")
+	}
+	if strings.TrimSpace(m.Text) == "" {
+		return fmt.Errorf("text is required")
+	}
+	if m.DependsOnOutboundID != nil && strings.TrimSpace(*m.DependsOnOutboundID) == "" {
+		return fmt.Errorf("depends_on_outbound_id must be omitted or non-empty")
+	}
+	if m.DeliveryClass != nil && strings.TrimSpace(*m.DeliveryClass) == "" {
+		return fmt.Errorf("delivery_class must be omitted or non-empty")
+	}
+	return nil
+}
