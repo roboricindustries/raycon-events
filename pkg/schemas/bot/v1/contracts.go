@@ -37,6 +37,8 @@ type BotOutboundV1 struct {
 
 	DependsOnOutboundID *string `json:"depends_on_outbound_id,omitempty"`
 	DeliveryClass       *string `json:"delivery_class,omitempty"`
+	FlowID              string  `json:"flow_id,omitempty"`
+	ClosesFlow          bool    `json:"closes_flow,omitempty"`
 }
 
 func (m BotInboundV1) MessageText() string {
@@ -108,6 +110,9 @@ func (m BotOutboundV1) Validate() error {
 	}
 	if m.DeliveryClass != nil && strings.TrimSpace(*m.DeliveryClass) == "" {
 		return fmt.Errorf("delivery_class must be omitted or non-empty")
+	}
+	if strings.TrimSpace(m.FlowID) == "" && m.ClosesFlow {
+		return fmt.Errorf("closes_flow requires flow_id")
 	}
 	return nil
 }

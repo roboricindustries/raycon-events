@@ -26,6 +26,8 @@ func TestBotOutboundV1Validate(t *testing.T) {
 		Kind:                     "bot.greeting",
 		Text:                     "hello",
 		DeliveryClass:            &deliveryClass,
+		FlowID:                   "deal:1:42",
+		ClosesFlow:               true,
 	}
 
 	if err := msg.Validate(); err != nil {
@@ -76,5 +78,31 @@ func TestBotOutboundV1ValidateRejectsBlankOptionalFieldsWhenPresent(t *testing.T
 
 	if err := msg.Validate(); err == nil {
 		t.Fatal("blank depends_on_outbound_id must fail validation")
+	}
+}
+
+func TestBotOutboundV1ValidateRejectsClosesFlowWithoutFlowID(t *testing.T) {
+	msg := BotOutboundV1{
+		Tenant: common.TenantRef{
+			CompanyID:      1,
+			CounterpartyID: 2,
+		},
+		Provider: common.ProviderRef{
+			Provider:   "wa.greenapi",
+			InstanceID: 3,
+		},
+		ClientID: 4,
+		Conversation: common.ConversationKey{
+			ProviderChatID: "77010000000@c.us",
+		},
+		InboundProviderMessageID: "in-1",
+		OutboundID:               "out-1",
+		Kind:                     "bot.greeting",
+		Text:                     "hello",
+		ClosesFlow:               true,
+	}
+
+	if err := msg.Validate(); err == nil {
+		t.Fatal("closes_flow without flow_id must fail validation")
 	}
 }
