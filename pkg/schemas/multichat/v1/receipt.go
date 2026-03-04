@@ -224,7 +224,7 @@ func NewAcceptedReceipt(
 	}
 	if withBody {
 		body := BodyDescriptor{
-			HasText:     preview == "",
+			HasText:     preview != "",
 			TextPreview: preview,
 			Fingerprint: fp,
 		}
